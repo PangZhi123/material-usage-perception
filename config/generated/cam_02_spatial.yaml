@@ -1,0 +1,112 @@
+camera:
+  camera_id: cam_02
+scene:
+  scene_id: scene_01
+projection:
+  direction: camera_to_scene
+  matrix_path: cam_02_camera_to_scene.npy
+  source_frame_size:
+  - 2560.0
+  - 1440.0
+  calibration_source_size:
+  - 2560.0
+  - 1440.0
+  calibration_target_size:
+  - 1267.0
+  - 920.0
+  scene_size:
+  - 1267.0
+  - 920.0
+  point_pairs:
+  - camera_normalized:
+    - 0.5921875
+    - 0.925
+    scene_normalized:
+    - 0.623991935483871
+    - 0.4166666666666667
+  - camera_normalized:
+    - 0.9859375
+    - 0.8986111111111111
+    scene_normalized:
+    - 0.5665322580645161
+    - 0.4166666666666667
+  - camera_normalized:
+    - 0.00390625
+    - 0.9180555555555555
+    scene_normalized:
+    - 0.6995967741935484
+    - 0.4166666666666667
+  - camera_normalized:
+    - 0.846875
+    - 0.6958333333333333
+    scene_normalized:
+    - 0.49899193548387094
+    - 0.6597222222222222
+  - camera_normalized:
+    - 0.50703125
+    - 0.7736111111111111
+    scene_normalized:
+    - 0.6340725806451613
+    - 0.5027777777777778
+  - camera_normalized:
+    - 0.33828125
+    - 0.8361111111111111
+    scene_normalized:
+    - 0.6945564516129032
+    - 0.5069444444444444
+  - camera_normalized:
+    - 0.74375
+    - 0.7652777777777777
+    scene_normalized:
+    - 0.5866935483870968
+    - 0.5291666666666667
+  - camera_normalized:
+    - 0.6640625
+    - 0.8333333333333334
+    scene_normalized:
+    - 0.6078629032258065
+    - 0.4791666666666667
+  quality:
+    point_count: 8
+    inlier_count: 5
+    mean_reprojection_error_px: 0.5478178769794179
+    max_reprojection_error_px: 1.319954734998741
+    reprojection_errors_px:
+    - 0.5952522344175153
+    - 79.10804345235215
+    - 0.049477667783810055
+    - 100.09333032721052
+    - 0.19980222986947904
+    - 59.78046665725314
+    - 0.5746025178275437
+    - 1.319954734998741
+    inlier_mask:
+    - true
+    - false
+    - true
+    - false
+    - true
+    - false
+    - true
+    - true
+area:
+  area_id: pouring_zone_01
+  coordinate_system: scene
+  polygon:
+  - - 611.7872983870967
+    - 352.6666666666667
+  - - 878.7258064516129
+    - 356.5
+  - - 897.8840725806451
+    - 608.2222222222222
+  - - 632.2227822580645
+    - 590.3333333333334
+  polygon_normalized:
+  - - 0.48286290322580644
+    - 0.38333333333333336
+  - - 0.6935483870967742
+    - 0.3875
+  - - 0.7086693548387096
+    - 0.6611111111111111
+  - - 0.49899193548387094
+    - 0.6416666666666667

@@ -1,0 +1,17 @@
+# Legacy cam2 calibration expressed without hidden resize factors.
+projection:
+  direction: camera_to_scene
+  matrix_path: ../data/test/homography_sence-1_to_cam2_clip.npy
+  source_frame_size: [2560, 1440]
+  calibration_source_size: [1152, 624]
+  calibration_target_size: [624, 624]
+  scene_size: [1267, 920]
+
+area:
+  area_id: pouring_zone_01
+  coordinate_system: scene
+  polygon:
+    - [533, 295]
+    - [863, 295]
+    - [863, 609]
+    - [533, 609]

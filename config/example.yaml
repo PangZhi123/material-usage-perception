@@ -1,0 +1,21 @@
+camera:
+  camera_id: cam_02
+  source: path/to/video.mp4
+  measurement_enabled: true
+
+detection:
+  model_path: path/to/best.pt
+  target_classes:
+    transporter: concrete_mixer_truck
+  confidence_threshold: 0.5
+
+event:
+  enter_confirm_seconds: 2.0
+  minimum_dwell_seconds: 60.0
+  exit_confirm_seconds: 5.0
+  lost_track_tolerance_seconds: 3.0
+
+material:
+  default_capacity_m3: 12.0
+  default_load_factor: 1.0
+  default_unload_factor: 0.95

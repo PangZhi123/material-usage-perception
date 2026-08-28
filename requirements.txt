@@ -1,0 +1,14 @@
+# 第一阶段计划依赖；开发相应模块时再在本地环境安装。
+fastapi
+python-multipart
+uvicorn[standard]
+pydantic
+numpy
+opencv-python
+Pillow
+shapely
+ultralytics
+lap>=0.5.12
+torch
+PyYAML
+pytest

@@ -1,0 +1,4 @@
+videos:
+  video_test_cam2:
+    video_path: ../data/test/cam2_5min_clip.mp4
+    tracking_json_path: ../data/test/tracking_results_2.json
