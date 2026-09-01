@@ -19,10 +19,24 @@ class VideoSource:
     video_id: str
     video_path: Path
     tracking_json_path: Path | None = None
+    camera_id: str | None = None
+    original_file_name: str | None = None
+    content_type: str = "video/mp4"
+    size_bytes: int | None = None
+    sha256: str | None = None
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+    frame_count: int | None = None
+    duration_seconds: float | None = None
+    captured_at: str | None = None
+    uploaded_at: str | None = None
+    status: str = "READY"
 
 
 class VideoSourceRegistry(Protocol):
     def resolve(self, video_id: str) -> VideoSource | None: ...
+    def register(self, source: VideoSource) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,9 +236,15 @@ class MappingVideoSourceRegistry:
 
     def __init__(self, sources: Mapping[str, VideoSource] | None = None) -> None:
         self._sources = dict(sources or {})
+        self._lock = RLock()
 
     def resolve(self, video_id: str) -> VideoSource | None:
-        return self._sources.get(video_id)
+        with self._lock:
+            return self._sources.get(video_id)
+
+    def register(self, source: VideoSource) -> None:
+        with self._lock:
+            self._sources[source.video_id] = source
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "MappingVideoSourceRegistry":

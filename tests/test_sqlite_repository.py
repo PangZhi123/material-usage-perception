@@ -6,9 +6,29 @@ from tempfile import TemporaryDirectory
 from material_usage_perception.repositories import (
     EventQuery, SQLiteRepository, StatisticsQuery,
 )
+from material_usage_perception.sources import VideoSource
 
 
 class SQLiteRepositoryTest(unittest.TestCase):
+    def test_video_assets_survive_restart_and_support_hash_lookup(self):
+        with TemporaryDirectory() as directory:
+            database = Path(directory) / "test.sqlite3"
+            video = Path(directory) / "video.mp4"
+            video.write_bytes(b"video")
+            repository = SQLiteRepository(database)
+            repository.add_video(VideoSource(
+                "video_1", video, camera_id="cam", original_file_name="test.mp4",
+                size_bytes=5, sha256="digest", width=32, height=24, fps=5.0,
+                frame_count=10, duration_seconds=2.0,
+                uploaded_at="2026-09-01T00:00:00+08:00",
+            ))
+            repository.close()
+            reopened = SQLiteRepository(database)
+            self.assertEqual(reopened.get_video("video_1").camera_id, "cam")
+            self.assertEqual(reopened.find_video_by_sha256("digest").video_id, "video_1")
+            self.assertEqual(len(reopened.list_videos()), 1)
+            reopened.close()
+
     def test_only_same_camera_active_task_is_rejected(self):
         with TemporaryDirectory() as directory:
             repository = SQLiteRepository(Path(directory) / "test.sqlite3")

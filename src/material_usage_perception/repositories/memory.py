@@ -7,6 +7,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from material_usage_perception.sources import VideoSource
+
 from .queries import (
     EventPage, EventQuery, StatisticsQuery, TrajectoryPage,
     event_page, statistics_data, trajectory_page,
@@ -35,6 +37,23 @@ class MemoryRepository:
         self.tasks: dict[str, dict[str, Any]] = {}
         self.events: dict[tuple[str, str], dict[str, Any]] = {}
         self.trajectories: dict[tuple[str, str, int], dict[str, Any]] = {}
+        self.videos: dict[str, VideoSource] = {}
+
+    def add_video(self, source: VideoSource) -> None:
+        with self._lock:
+            self.videos[source.video_id] = source
+
+    def get_video(self, video_id: str) -> VideoSource | None:
+        with self._lock:
+            return self.videos.get(video_id)
+
+    def find_video_by_sha256(self, digest: str) -> VideoSource | None:
+        with self._lock:
+            return next((item for item in self.videos.values() if item.sha256 == digest), None)
+
+    def list_videos(self) -> list[VideoSource]:
+        with self._lock:
+            return list(self.videos.values())
 
     def add_scene(self, record: SceneRecord) -> None:
         with self._lock:

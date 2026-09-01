@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import os
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -18,7 +19,7 @@ from fastapi import (
 
 from material_usage_perception.api.v1_models import (
     ApiEnvelope, CameraRegistrationRequest, ConfigurationCreateRequest,
-    TaskActionRequest, TaskCreateRequest,
+    LocalVideoRegistrationRequest, TaskActionRequest, TaskCreateRequest,
 )
 from material_usage_perception.config import AlgorithmSettings, DetectionRuntimeConfig
 from material_usage_perception.domain import VehicleStateConfig
@@ -32,7 +33,7 @@ from material_usage_perception.repositories import (
     BackendRepository, EventQuery, SceneRecord, StatisticsQuery,
 )
 from material_usage_perception.sources import (
-    CameraSource, CameraSourceRegistry, VideoSourceRegistry,
+    CameraSource, CameraSourceRegistry, VideoSource, VideoSourceRegistry,
 )
 from material_usage_perception.tasks import TaskConflictError, TaskManager, TaskStatus
 
@@ -62,6 +63,123 @@ def _fail(status: int, code: str, message: str) -> None:
     )
 
 
+def _optional_timestamp(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        _fail(422, "MP0101", "capturedAt must use ISO 8601")
+    if parsed.utcoffset() is None:
+        _fail(422, "MP0101", "capturedAt must include a timezone")
+    return parsed.isoformat()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _video_metadata(path: Path) -> tuple[int, int, float, int, float]:
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if not capture.isOpened():
+            _fail(422, "MP0201", "uploaded video cannot be decoded")
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        success, _ = capture.read()
+    finally:
+        capture.release()
+    if width <= 0 or height <= 0 or fps <= 0 or frame_count <= 0 or not success:
+        _fail(422, "MP0201", "video metadata is invalid")
+    return width, height, fps, frame_count, frame_count / fps
+
+
+def _register_video_file(
+    *,
+    path: Path,
+    camera_id: str,
+    original_file_name: str,
+    content_type: str,
+    digest: str,
+    size_bytes: int,
+    captured_at: str | None,
+    repository: BackendRepository,
+    registry: VideoSourceRegistry,
+    destination_root: Path,
+    move_into_storage: bool,
+) -> tuple[VideoSource, bool]:
+    matching = [
+        item for item in repository.list_videos()
+        if item.sha256 == digest and item.video_path.is_file()
+    ]
+    same_camera = next(
+        (item for item in matching if item.camera_id == camera_id), None
+    )
+    if same_camera is not None:
+        if move_into_storage:
+            path.unlink(missing_ok=True)
+        registry.register(same_camera)
+        return same_camera, True
+    existing = matching[0] if matching else None
+    if existing is not None:
+        if move_into_storage:
+            path.unlink(missing_ok=True)
+        source = VideoSource(
+            video_id=f"video_{uuid4().hex[:16]}", video_path=existing.video_path,
+            camera_id=camera_id, original_file_name=original_file_name,
+            content_type=content_type, size_bytes=existing.size_bytes,
+            sha256=digest, width=existing.width, height=existing.height,
+            fps=existing.fps, frame_count=existing.frame_count,
+            duration_seconds=existing.duration_seconds, captured_at=captured_at,
+            uploaded_at=_now().isoformat(), status="READY",
+        )
+        repository.add_video(source)
+        registry.register(source)
+        return source, True
+
+    width, height, fps, frame_count, duration = _video_metadata(path)
+    video_id = f"video_{uuid4().hex[:16]}"
+    final_path = destination_root / f"{video_id}.mp4" if move_into_storage else path
+    moved = False
+    try:
+        if move_into_storage:
+            path.replace(final_path)
+            moved = True
+        source = VideoSource(
+            video_id=video_id, video_path=final_path, camera_id=camera_id,
+            original_file_name=original_file_name, content_type=content_type,
+            size_bytes=size_bytes, sha256=digest, width=width, height=height,
+            fps=fps, frame_count=frame_count, duration_seconds=duration,
+            captured_at=captured_at, uploaded_at=_now().isoformat(), status="READY",
+        )
+        repository.add_video(source)
+        registry.register(source)
+        return source, False
+    except Exception:
+        if moved:
+            final_path.unlink(missing_ok=True)
+        raise
+
+
+def _video_payload(source: VideoSource, *, deduplicated: bool) -> dict[str, Any]:
+    return {
+        "videoId": source.video_id, "cameraId": source.camera_id,
+        "originalFileName": source.original_file_name,
+        "contentType": source.content_type, "sizeBytes": source.size_bytes,
+        "sha256": source.sha256, "width": source.width, "height": source.height,
+        "fps": source.fps, "frameCount": source.frame_count,
+        "durationSec": source.duration_seconds, "capturedAt": source.captured_at,
+        "uploadedAt": source.uploaded_at, "status": source.status,
+        "deduplicated": deduplicated,
+    }
+
+
 def _validate_time_range(start: datetime, end: datetime) -> None:
     if start.utcoffset() is None or end.utcoffset() is None:
         _fail(422, "MP0101", "startTime and endTime must include a timezone")
@@ -82,6 +200,7 @@ def create_v1_router(
     router = APIRouter()
     api_prefix = "/api/material-perception/v1"
     scene_root = storage_root / "scenes"
+    video_root = storage_root / "videos"
     detection = detection or DetectionRuntimeConfig.from_environment()
     if task_manager is None or video_registry is None or camera_registry is None:
         raise ValueError("task_manager, video_registry and camera_registry are required")
@@ -90,6 +209,91 @@ def create_v1_router(
     def register_camera(payload: CameraRegistrationRequest) -> ApiEnvelope:
         camera_registry.register(CameraSource(payload.cameraId, payload.streamUrl))
         return ok({"cameraId": payload.cameraId, "status": "ACTIVE"})
+
+    @router.post(f"{api_prefix}/videos", response_model=ApiEnvelope, status_code=201)
+    async def upload_video(
+        file: UploadFile = File(...),
+        cameraId: str = Form(...),
+        capturedAt: str | None = Form(default=None),
+    ) -> ApiEnvelope:
+        if not cameraId.strip() or len(cameraId) > 64:
+            _fail(422, "MP0101", "cameraId must contain between 1 and 64 characters")
+        original_name = Path(file.filename or "upload.mp4").name
+        content_type = (file.content_type or "application/octet-stream").lower()
+        if Path(original_name).suffix.lower() != ".mp4" or content_type not in {
+            "video/mp4", "application/mp4", "application/octet-stream",
+        }:
+            _fail(415, "MP0101", "only MP4 video is supported")
+        captured_at = _optional_timestamp(capturedAt)
+        maximum_bytes = int(os.getenv(
+            "MATERIAL_PERCEPTION_MAX_VIDEO_BYTES", str(5 * 1024 * 1024 * 1024)
+        ))
+        video_root.mkdir(parents=True, exist_ok=True)
+        temporary = video_root / f".upload_{uuid4().hex}.mp4"
+        digest = sha256()
+        size_bytes = 0
+        try:
+            with temporary.open("xb") as destination:
+                while chunk := await file.read(1024 * 1024):
+                    size_bytes += len(chunk)
+                    if size_bytes > maximum_bytes:
+                        _fail(413, "MP0101", "video exceeds maximum upload size")
+                    destination.write(chunk)
+                    digest.update(chunk)
+            if size_bytes == 0:
+                _fail(422, "MP0101", "video file must not be empty")
+            source, deduplicated = _register_video_file(
+                path=temporary, camera_id=cameraId.strip(),
+                original_file_name=original_name, content_type="video/mp4",
+                digest=digest.hexdigest(), size_bytes=size_bytes,
+                captured_at=captured_at, repository=repository,
+                registry=video_registry, destination_root=video_root,
+                move_into_storage=True,
+            )
+        except HTTPException:
+            temporary.unlink(missing_ok=True)
+            raise
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
+            _fail(500, "MP0401", f"video registration failed: {exc}")
+        return ok(_video_payload(source, deduplicated=deduplicated))
+
+    @router.post(
+        f"{api_prefix}/video-registrations",
+        response_model=ApiEnvelope,
+        status_code=201,
+    )
+    def register_local_video(payload: LocalVideoRegistrationRequest) -> ApiEnvelope:
+        local_root = Path(os.getenv(
+            "MATERIAL_PERCEPTION_LOCAL_VIDEO_ROOT", "data/videos"
+        )).resolve()
+        relative = Path(payload.relativePath)
+        if relative.is_absolute():
+            _fail(422, "MP0101", "relativePath must be relative to the configured video root")
+        candidate = (local_root / relative).resolve()
+        try:
+            candidate.relative_to(local_root)
+        except ValueError:
+            _fail(422, "MP0101", "relativePath escapes the configured video root")
+        if candidate.suffix.lower() != ".mp4" or not candidate.is_file():
+            _fail(404, "MP0201", "local MP4 video is not readable")
+        try:
+            digest = _file_sha256(candidate)
+            source, deduplicated = _register_video_file(
+                path=candidate, camera_id=payload.cameraId,
+                original_file_name=candidate.name, content_type="video/mp4",
+                digest=digest, size_bytes=candidate.stat().st_size,
+                captured_at=(
+                    None if payload.capturedAt is None else payload.capturedAt.isoformat()
+                ),
+                repository=repository, registry=video_registry,
+                destination_root=video_root, move_into_storage=False,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _fail(500, "MP0401", f"video registration failed: {exc}")
+        return ok(_video_payload(source, deduplicated=deduplicated))
 
     @router.post(f"{api_prefix}/scenes", response_model=ApiEnvelope)
     async def create_scene(
@@ -273,6 +477,11 @@ def create_v1_router(
             video_source = video_registry.resolve(payload.videoId)
             if video_source is None:
                 _fail(404, "MP0201", f"videoId is not registered: {payload.videoId}")
+            if (
+                video_source.camera_id is not None
+                and video_source.camera_id != configuration["cameraId"]
+            ):
+                _fail(422, "MP0201", "video cameraId does not match configuration")
             if not video_source.video_path.is_file() or (
                 video_source.tracking_json_path is not None
                 and not video_source.tracking_json_path.is_file()

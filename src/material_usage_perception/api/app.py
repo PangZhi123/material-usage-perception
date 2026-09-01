@@ -71,14 +71,17 @@ def create_app(
     repository: Any | None = None,
     video_registry: VideoSourceRegistry | None = None,
     camera_registry: CameraSourceRegistry | None = None,
+    storage_root: str | Path = Path("outputs") / "backend_data",
 ) -> FastAPI:
     store = SettingsStore()
-    storage_root = Path("outputs") / "backend_data"
+    storage_root = Path(storage_root)
     resolved_repository = repository or SQLiteRepository(
         storage_root / "material_perception.sqlite3"
     )
     detection = DetectionRuntimeConfig.from_environment()
     resolved_video_registry = video_registry or video_registry_from_environment()
+    for registered_video in resolved_repository.list_videos():
+        resolved_video_registry.register(registered_video)
     resolved_camera_registry = camera_registry or camera_registry_from_environment()
     task_manager = TaskManager(resolved_repository, detection)
 

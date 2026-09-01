@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from material_usage_perception.sources import VideoSource
 from .memory import SceneRecord
 from .queries import (
     EventPage, EventQuery, StatisticsQuery, TrajectoryPage,
@@ -44,6 +45,16 @@ class SQLiteRepository:
                 CREATE TABLE IF NOT EXISTS configuration (
                     configuration_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS video_asset (
+                    video_id TEXT PRIMARY KEY, camera_id TEXT,
+                    original_file_name TEXT, storage_path TEXT NOT NULL,
+                    tracking_json_path TEXT, content_type TEXT NOT NULL,
+                    size_bytes INTEGER, sha256 TEXT, width INTEGER, height INTEGER,
+                    fps REAL, frame_count INTEGER, duration_seconds REAL,
+                    captured_at TEXT, uploaded_at TEXT, status TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_video_asset_sha256
+                    ON video_asset(sha256);
                 CREATE TABLE IF NOT EXISTS analysis_task (
                     task_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
                 );
@@ -59,6 +70,60 @@ class SQLiteRepository:
                 );
                 """
             )
+
+    def add_video(self, source: VideoSource) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """INSERT OR REPLACE INTO video_asset VALUES
+                   (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    source.video_id, source.camera_id, source.original_file_name,
+                    str(source.video_path),
+                    None if source.tracking_json_path is None else str(source.tracking_json_path),
+                    source.content_type, source.size_bytes, source.sha256,
+                    source.width, source.height, source.fps, source.frame_count,
+                    source.duration_seconds, source.captured_at, source.uploaded_at,
+                    source.status,
+                ),
+            )
+
+    def get_video(self, video_id: str) -> VideoSource | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM video_asset WHERE video_id=?", (video_id,)
+            ).fetchone()
+        return None if row is None else self._video_from_row(row)
+
+    def find_video_by_sha256(self, digest: str) -> VideoSource | None:
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT * FROM video_asset WHERE sha256=? AND status='READY'
+                   ORDER BY rowid LIMIT 1""", (digest,)
+            ).fetchone()
+        return None if row is None else self._video_from_row(row)
+
+    def list_videos(self) -> list[VideoSource]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM video_asset WHERE status='READY' ORDER BY rowid"
+            ).fetchall()
+        return [self._video_from_row(row) for row in rows]
+
+    @staticmethod
+    def _video_from_row(row: sqlite3.Row) -> VideoSource:
+        return VideoSource(
+            video_id=row["video_id"], video_path=Path(row["storage_path"]),
+            tracking_json_path=(
+                None if row["tracking_json_path"] is None
+                else Path(row["tracking_json_path"])
+            ),
+            camera_id=row["camera_id"], original_file_name=row["original_file_name"],
+            content_type=row["content_type"], size_bytes=row["size_bytes"],
+            sha256=row["sha256"], width=row["width"], height=row["height"],
+            fps=row["fps"], frame_count=row["frame_count"],
+            duration_seconds=row["duration_seconds"], captured_at=row["captured_at"],
+            uploaded_at=row["uploaded_at"], status=row["status"],
+        )
 
     def add_scene(self, record: SceneRecord) -> None:
         with self._lock, self._connection:

@@ -166,6 +166,8 @@ uvicorn material_usage_perception.api.app:app --host 127.0.0.1 --port 8000
 - `POST /api/material-perception/v1/scenes`：上传 PNG/JPEG 场景图，返回尺寸、摘要和 `sceneId`；
 - `POST /api/material-perception/v1/configurations`：提交特征点、工作区域、物料和状态机参数，返回不可变配置版本、单应矩阵及标定质量；
 - `POST /api/material-perception/v1/cameras`：登记或更新 `cameraId` 对应的 RTSP/RTMP 地址；
+- `POST /api/material-perception/v1/videos`：流式上传 MP4、哈希去重、持久注册并返回 `videoId`；
+- `POST /api/material-perception/v1/video-registrations`：登记允许目录内已有的本地 MP4，不复制文件；
 - `POST /api/material-perception/v1/tasks`：创建 `VIDEO_FILE` 历史视频任务或 `CAMERA_STREAM` 实时任务；
 - `PATCH /api/material-perception/v1/tasks/{taskId}`：幂等停止任务；
 - `GET /api/material-perception/v1/events`：按时间、相机、区域和状态分页查询事件；
@@ -219,6 +221,45 @@ Content-Type: application/json
 
 RTSP 默认通过 OpenCV FFmpeg 后端并优先使用 TCP；读取线程只向算法提供最新帧，
 断线后自动重连，避免推理速度低于码流帧率时不断积压旧帧。
+
+### 历史视频上传与本地注册
+
+前端上传视频：
+
+```http
+POST /api/material-perception/v1/videos
+Content-Type: multipart/form-data
+
+file=@history.mp4
+cameraId=CAM_TEST_1
+capturedAt=2026-09-01T08:00:00+08:00
+```
+
+后端分块写入文件并同步计算 SHA-256，不会把整个视频加载到内存。相同内容、相同
+`cameraId` 重复上传时返回原有 `videoId`；相同内容用于另一个相机时新建注册记录，
+但复用同一个物理文件。上传记录保存在 SQLite 中，重启后仍可解析 `videoId`。
+
+若视频已经位于服务器允许目录中，可只注册、不复制。首先设置：
+
+```powershell
+$env:MATERIAL_PERCEPTION_LOCAL_VIDEO_ROOT="D:\shared-videos"
+```
+
+然后提交相对于该目录的路径：
+
+```json
+POST /api/material-perception/v1/video-registrations
+
+{
+  "cameraId": "CAM_TEST_1",
+  "relativePath": "project-a/history.mp4",
+  "capturedAt": "2026-09-01T08:00:00+08:00"
+}
+```
+
+接口禁止绝对路径和越过允许根目录的路径。上传及本地注册成功后，都使用返回的
+`videoId` 调用 `/api/material-perception/v1/tasks`。当前版本在文件上传完成且通过
+解码校验后才允许开始分析，尚不对未完成的 MP4 边上传边分析。
 
 ### 当前阶段范围限制
 

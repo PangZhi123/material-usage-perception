@@ -1,6 +1,7 @@
 import unittest
 import json
 import time
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -342,6 +343,76 @@ class ApiV1Test(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["data"]["cameraId"], "cam")
+
+    def test_upload_video_registers_metadata_and_deduplicates_content(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source.mp4"
+            writer = cv2.VideoWriter(
+                str(source_path), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 24)
+            )
+            self.assertTrue(writer.isOpened())
+            for _ in range(5):
+                writer.write(np.zeros((24, 32, 3), dtype=np.uint8))
+            writer.release()
+            content = source_path.read_bytes()
+            repository = MemoryRepository()
+            registry = MappingVideoSourceRegistry()
+            with TestClient(create_app(
+                repository=repository, video_registry=registry,
+                storage_root=root / "backend",
+            )) as client:
+                first = client.post(
+                    "/api/material-perception/v1/videos",
+                    files={"file": ("source.mp4", content, "video/mp4")},
+                    data={"cameraId": "cam"},
+                )
+                self.assertEqual(first.status_code, 201, first.text)
+                first_data = first.json()["data"]
+                self.assertEqual(first_data["width"], 32)
+                self.assertEqual(first_data["height"], 24)
+                self.assertFalse(first_data["deduplicated"])
+                second = client.post(
+                    "/api/material-perception/v1/videos",
+                    files={"file": ("copy.mp4", content, "video/mp4")},
+                    data={"cameraId": "cam"},
+                )
+                self.assertEqual(second.status_code, 201, second.text)
+                self.assertTrue(second.json()["data"]["deduplicated"])
+                self.assertEqual(
+                    second.json()["data"]["videoId"], first_data["videoId"]
+                )
+                self.assertIsNotNone(registry.resolve(first_data["videoId"]))
+                self.assertEqual(
+                    len(list((root / "backend" / "videos").glob("video_*.mp4"))), 1
+                )
+
+    def test_registers_existing_local_video_without_copying_it(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "local.mp4"
+            writer = cv2.VideoWriter(
+                str(source_path), cv2.VideoWriter_fourcc(*"mp4v"), 5.0, (32, 24)
+            )
+            self.assertTrue(writer.isOpened())
+            writer.write(np.zeros((24, 32, 3), dtype=np.uint8))
+            writer.release()
+            registry = MappingVideoSourceRegistry()
+            with patch.dict(
+                "os.environ", {"MATERIAL_PERCEPTION_LOCAL_VIDEO_ROOT": str(root)}
+            ), TestClient(create_app(
+                repository=MemoryRepository(), video_registry=registry,
+                storage_root=root / "backend",
+            )) as client:
+                response = client.post(
+                    "/api/material-perception/v1/video-registrations",
+                    json={"cameraId": "cam", "relativePath": "local.mp4"},
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+                data = response.json()["data"]
+                self.assertFalse(data["deduplicated"])
+                self.assertEqual(registry.resolve(data["videoId"]).video_path, source_path)
+                self.assertFalse((root / "backend" / "videos" / f'{data["videoId"]}.mp4').exists())
 
     def test_duplicate_vehicle_override_keys_are_rejected(self):
         scene_id = self.create_scene()
