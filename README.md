@@ -20,6 +20,79 @@
 - 创建历史视频任务时，任务的 `cameraId` 必须与视频注册时的 `cameraId` 一致。
 - 当前采用可靠的“上传完成后分析”流程，尚未对未上传完整的普通 MP4 边传边分析。
 
+### 接口一：上传并注册页面端历史视频
+
+适用于视频位于测试人员电脑或需要由前端页面选择文件的场景。请求使用
+`multipart/form-data`，当前仅支持 MP4：
+
+```powershell
+curl.exe -X POST "http://192.168.10.32:8001/api/material-perception/v1/videos" `
+  -F "file=@D:/test/history.mp4;type=video/mp4" `
+  -F "cameraId=CAM_TEST_1" `
+  -F "capturedAt=2026-09-01T08:00:00+08:00"
+```
+
+字段说明：
+
+- `file`：必填，待上传的 MP4 文件；
+- `cameraId`：必填，视频所属摄像头标识，后续创建任务时必须保持一致；
+- `capturedAt`：选填，带时区的 ISO 8601 采集时间。
+
+成功时 HTTP 状态码为 `201`，重点读取响应中的 `data.videoId`：
+
+```json
+{
+  "success": true,
+  "code": "0",
+  "data": {
+    "videoId": "video_0123456789abcdef",
+    "cameraId": "CAM_TEST_1",
+    "status": "READY",
+    "deduplicated": false
+  }
+}
+```
+
+用相同 `cameraId` 重复上传内容完全相同的文件时，接口返回原 `videoId`，并将
+`deduplicated` 设为 `true`，不会再次保存一份视频。
+
+### 接口二：注册算法服务器本地已有视频
+
+适用于 MP4 已经位于算法后端服务器的场景。此接口只登记文件路径，不上传、不复制。
+启动后端前先设置服务器允许访问的视频根目录：
+
+```powershell
+$env:MATERIAL_PERCEPTION_LOCAL_VIDEO_ROOT="D:\shared-videos"
+```
+
+假设待测文件为 `D:\shared-videos\project-a\history.mp4`，请求中的
+`relativePath` 应填写相对于上述根目录的路径：
+
+```powershell
+curl.exe -X POST `
+  "http://192.168.10.32:8001/api/material-perception/v1/video-registrations" `
+  -H "Content-Type: application/json" `
+  -d '{"cameraId":"CAM_TEST_1","relativePath":"project-a/history.mp4","capturedAt":"2026-09-01T08:00:00+08:00"}'
+```
+
+成功时同样返回 HTTP `201` 和 `data.videoId`。`relativePath` 不能是绝对路径，
+也不能通过 `..` 越过允许根目录；后端进程必须具有原文件读取权限。由于分析时直接
+读取原文件，注册后不要移动或删除该 MP4。
+
+### 使用返回的 videoId 创建历史分析任务
+
+上述任一接口成功后，无需修改 YAML 或重启后端，直接调用任务接口：
+
+```powershell
+curl.exe -X POST "http://192.168.10.32:8001/api/material-perception/v1/tasks" `
+  -H "Content-Type: application/json" `
+  -d '{"cameraId":"CAM_TEST_1","configurationId":"cfg_example","inputType":"VIDEO_FILE","videoId":"video_0123456789abcdef","options":{"persistTrajectory":true,"pushIntervalMs":1000}}'
+```
+
+其中 `configurationId` 必须替换为后端已有的有效配置 ID，`cameraId` 必须与视频
+上传或注册时一致，`videoId` 必须原样使用接口返回值，不能填写文件名。也可以打开
+`http://<后端IP>:<端口>/docs`，依次通过 Swagger 测试“上传/注册”和“创建任务”。
+
 测试人员可参考
 [历史视频上传注册接口测试说明](docs/历史视频上传注册接口测试说明.txt)
 完成上传、去重、重启持久化及历史分析任务验收。
