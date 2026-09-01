@@ -165,15 +165,16 @@ uvicorn material_usage_perception.api.app:app --host 127.0.0.1 --port 8000
 
 - `POST /api/material-perception/v1/scenes`：上传 PNG/JPEG 场景图，返回尺寸、摘要和 `sceneId`；
 - `POST /api/material-perception/v1/configurations`：提交特征点、工作区域、物料和状态机参数，返回不可变配置版本、单应矩阵及标定质量；
-- `POST /api/material-perception/v1/tasks`：创建历史视频任务；提供 `trackingJsonPath` 时快速回放，省略时运行配置的 YOLO 模型；
+- `POST /api/material-perception/v1/cameras`：登记或更新 `cameraId` 对应的 RTSP/RTMP 地址；
+- `POST /api/material-perception/v1/tasks`：创建 `VIDEO_FILE` 历史视频任务或 `CAMERA_STREAM` 实时任务；
 - `PATCH /api/material-perception/v1/tasks/{taskId}`：幂等停止任务；
 - `GET /api/material-perception/v1/events`：按时间、相机、区域和状态分页查询事件；
 - `GET /api/material-perception/v1/statistics`：查询完成、路过、未完成事件和正式累计方量；
 - `GET /api/material-perception/v1/trajectories/{vehicleVisitId}`：查询可抽样的相机/场景轨迹；
 - 业务错误使用规范中的 `MP0101`～`MP0105`，HTTP 响应采用统一包络。
 
-由于当前尚未接入上层相机管理模块，配置请求暂时允许传入
-`cameraFrameWidth` 和 `cameraFrameHeight`；省略时使用接口示例的 1920×1080。
+配置请求允许传入 `cameraFrameWidth` 和 `cameraFrameHeight`；省略时使用接口示例的
+1920×1080。实时任务开始后，检测框归一化和空间投影使用相机实际返回的帧尺寸。
 接口规范规定的最短有效作业时间默认值为 60 秒，后端默认值已与其统一，用户配置
 仍可覆盖。
 
@@ -183,23 +184,50 @@ uvicorn material_usage_perception.api.app:app --host 127.0.0.1 --port 8000
 $env:MATERIAL_PERCEPTION_MODEL_PATH="models\best.pt"
 $env:MATERIAL_PERCEPTION_MODEL_VERSION="yolov8-ml-1-20250511"
 $env:MATERIAL_PERCEPTION_CONFIDENCE="0.5"
+$env:MATERIAL_PERCEPTION_CAMERA_REGISTRY="config\camera_registry.yaml"
 ```
 
 参考文件为 `config/backend.env.example`。`GET /health` 会返回模型是否已配置及
 `model_version`，但不会暴露模型绝对路径。
 
 当前单机后端使用 `outputs/backend_data/material_perception.sqlite3` 保存场景、配置、
-任务、事件和轨迹。历史视频任务目前同步执行；适合单视频开发验收。正式实时运行前
-还需将任务执行迁移到独立 worker，使 `PATCH /tasks/{taskId}` 能在处理中即时取消。
+任务、事件和轨迹。历史视频和实时摄像头任务都由后台线程执行，
+`PATCH /tasks/{taskId}` 可请求停止并释放视频源。
+
+实时相机可以通过环境变量指向 YAML 注册表，也可以在服务启动后调用：
+
+```http
+POST /api/material-perception/v1/cameras
+Content-Type: application/json
+
+{
+  "cameraId": "CAM_TEST_1",
+  "streamUrl": "rtsp://username:password@192.168.10.100:554/Streaming/Channels/102"
+}
+```
+
+随后使用相同的 `cameraId` 和对应配置创建任务：
+
+```json
+{
+  "cameraId": "CAM_TEST_1",
+  "configurationId": "cfg_xxx",
+  "inputType": "CAMERA_STREAM",
+  "options": {"persistTrajectory": true, "pushIntervalMs": 1000}
+}
+```
+
+RTSP 默认通过 OpenCV FFmpeg 后端并优先使用 TCP；读取线程只向算法提供最新帧，
+断线后自动重连，避免推理速度低于码流帧率时不断积压旧帧。
 
 ### 当前阶段范围限制
 
 当前版本明确以“单工作区域、单监控视频”为目标：
 
 - 每个配置必须且只能提交一个 `workArea`，否则返回 `MP0104`；
-- 任务输入只支持 `VIDEO_FILE`；
-- 同一后端实例同时只允许一个 `QUEUED/RUNNING/STOPPING` 任务；
-- 第二个并发任务返回 `MP0203`，不建立多任务队列；
+- 任务输入支持 `VIDEO_FILE` 和 `CAMERA_STREAM`；
+- 同一摄像头同时只允许一个 `QUEUED/RUNNING/STOPPING` 任务；
+- 同一摄像头的第二个并发任务返回 `MP0203`；
 - 暂不处理多区域身份共享、多视频并行和跨摄像头去重。
 
 这些限制位于接口和仓储层，后续扩展时可以逐步放开，不影响现有单车状态机和用量

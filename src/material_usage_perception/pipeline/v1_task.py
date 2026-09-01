@@ -18,6 +18,7 @@ from material_usage_perception.geometry import HomographyProjector, PolygonRegio
 from material_usage_perception.identity import TrackStitchConfig
 from material_usage_perception.pipeline.frame_processor import FrameProcessor
 from material_usage_perception.pipeline.legacy_tracking_reader import LegacyTrackingReader
+from material_usage_perception.sources import CameraStreamReader
 from material_usage_perception.tracker import YoloByteTrackTracker
 
 
@@ -40,21 +41,27 @@ def execute_tracking_task(
     cancellation_token: Any | None = None,
     frame_callback: Callable[[dict[str, Any]], None] | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
+    camera_stream: CameraStreamReader | None = None,
 ) -> TaskExecutionResult:
     """Return contract-shaped events and trajectories for one configured area."""
 
-    capture = cv2.VideoCapture(str(video_path))
-    try:
-        if not capture.isOpened():
-            raise ValueError(f"cannot open video: {video_path}")
-        fps = float(capture.get(cv2.CAP_PROP_FPS))
-        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-    finally:
-        capture.release()
-    if fps <= 0 or width <= 0 or height <= 0:
-        raise ValueError("source video reports invalid metadata")
+    if camera_stream is None:
+        capture = cv2.VideoCapture(str(video_path))
+        try:
+            if not capture.isOpened():
+                raise ValueError(f"cannot open video: {video_path}")
+            fps = float(capture.get(cv2.CAP_PROP_FPS))
+            width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        finally:
+            capture.release()
+        if fps <= 0 or width <= 0 or height <= 0:
+            raise ValueError("source video reports invalid metadata")
+    else:
+        metadata = camera_stream.metadata
+        width, height, fps = metadata.width, metadata.height, metadata.fps
+        frame_count = 0
 
     camera_size = tuple(configuration["cameraFrameSize"])
     scene_size = tuple(configuration["sceneFrameSize"])
@@ -72,7 +79,27 @@ def execute_tracking_task(
     )
     settings = _settings(configuration["settings"])
     processor = FrameProcessor(settings.stitch, settings.state)
-    if tracking_json_path is not None:
+    if camera_stream is not None:
+        if model_path is None:
+            raise ValueError("model path is required for camera streams")
+        tracker = YoloByteTrackTracker(
+            model_path, confidence_threshold=confidence_threshold
+        )
+        frame_stream = (
+            (
+                frame.sequence,
+                frame.timestamp_seconds,
+                tracker.track_frame(
+                    frame.image,
+                    frame_index=frame.sequence,
+                    video_time_seconds=frame.timestamp_seconds,
+                    camera_id=configuration["cameraId"],
+                    processing_session_id=task_id,
+                ),
+            )
+            for frame in camera_stream.iter_frames(cancellation_token)
+        )
+    elif tracking_json_path is not None:
         observations = LegacyTrackingReader(
             camera_id=configuration["cameraId"], processing_session_id=task_id, fps=fps
         ).read(tracking_json_path).observations

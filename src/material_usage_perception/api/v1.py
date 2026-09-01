@@ -17,7 +17,8 @@ from fastapi import (
 )
 
 from material_usage_perception.api.v1_models import (
-    ApiEnvelope, ConfigurationCreateRequest, TaskActionRequest, TaskCreateRequest,
+    ApiEnvelope, CameraRegistrationRequest, ConfigurationCreateRequest,
+    TaskActionRequest, TaskCreateRequest,
 )
 from material_usage_perception.config import AlgorithmSettings, DetectionRuntimeConfig
 from material_usage_perception.domain import VehicleStateConfig
@@ -30,7 +31,9 @@ from material_usage_perception.geometry import (
 from material_usage_perception.repositories import (
     BackendRepository, EventQuery, SceneRecord, StatisticsQuery,
 )
-from material_usage_perception.sources import VideoSourceRegistry
+from material_usage_perception.sources import (
+    CameraSource, CameraSourceRegistry, VideoSourceRegistry,
+)
 from material_usage_perception.tasks import TaskConflictError, TaskManager, TaskStatus
 
 
@@ -74,13 +77,19 @@ def create_v1_router(
     detection: DetectionRuntimeConfig | None = None,
     task_manager: TaskManager | None = None,
     video_registry: VideoSourceRegistry | None = None,
+    camera_registry: CameraSourceRegistry | None = None,
 ) -> APIRouter:
     router = APIRouter()
     api_prefix = "/api/material-perception/v1"
     scene_root = storage_root / "scenes"
     detection = detection or DetectionRuntimeConfig.from_environment()
-    if task_manager is None or video_registry is None:
-        raise ValueError("task_manager and video_registry are required")
+    if task_manager is None or video_registry is None or camera_registry is None:
+        raise ValueError("task_manager, video_registry and camera_registry are required")
+
+    @router.post(f"{api_prefix}/cameras", response_model=ApiEnvelope)
+    def register_camera(payload: CameraRegistrationRequest) -> ApiEnvelope:
+        camera_registry.register(CameraSource(payload.cameraId, payload.streamUrl))
+        return ok({"cameraId": payload.cameraId, "status": "ACTIVE"})
 
     @router.post(f"{api_prefix}/scenes", response_model=ApiEnvelope)
     async def create_scene(
@@ -248,26 +257,36 @@ def create_v1_router(
             _fail(500, "MP0401", f"configuration query failed: {exc}")
         if configuration is None or configuration.get("status") != "ACTIVE":
             _fail(409, "MP0202", "configurationId is not ACTIVE")
+        video_source = None
+        camera_source = None
         if payload.inputType == "CAMERA_STREAM":
-            _fail(503, "MP0201", "camera source adapter is not configured")
-        assert payload.videoId is not None
-        source = video_registry.resolve(payload.videoId)
-        if source is None:
-            _fail(404, "MP0201", f"videoId is not registered: {payload.videoId}")
-        if not source.video_path.is_file() or (
-            source.tracking_json_path is not None
-            and not source.tracking_json_path.is_file()
-        ):
-            _fail(404, "MP0201", "registered video source is not readable")
-        if source.tracking_json_path is None and (
-            detection.model_path is None or not detection.model_path.is_file()
-        ):
-            _fail(500, "MP0301", "configured detection model is not readable")
+            assert payload.cameraId is not None
+            camera_source = camera_registry.resolve(payload.cameraId)
+            if camera_source is None:
+                _fail(404, "MP0201", f"cameraId is not registered: {payload.cameraId}")
+            if configuration["cameraId"] != payload.cameraId:
+                _fail(422, "MP0201", "cameraId does not match configuration")
+            if detection.model_path is None or not detection.model_path.is_file():
+                _fail(500, "MP0301", "configured detection model is not readable")
+        else:
+            assert payload.videoId is not None
+            video_source = video_registry.resolve(payload.videoId)
+            if video_source is None:
+                _fail(404, "MP0201", f"videoId is not registered: {payload.videoId}")
+            if not video_source.video_path.is_file() or (
+                video_source.tracking_json_path is not None
+                and not video_source.tracking_json_path.is_file()
+            ):
+                _fail(404, "MP0201", "registered video source is not readable")
+            if video_source.tracking_json_path is None and (
+                detection.model_path is None or not detection.model_path.is_file()
+            ):
+                _fail(500, "MP0301", "configured detection model is not readable")
 
         task_id = f"task_{uuid4().hex[:16]}"
         task = {
             "taskId": task_id, "inputType": payload.inputType,
-            "cameraId": None, "videoId": payload.videoId,
+            "cameraId": payload.cameraId, "videoId": payload.videoId,
             "configurationId": payload.configurationId,
             "modelVersion": configuration.get("modelVersion", detection.model_version),
             "options": payload.options.model_dump(),
@@ -276,18 +295,26 @@ def create_v1_router(
             "endedAt": None, "error": None, "stopRequested": False,
         }
         try:
-            task_manager.submit_video(
-                task=task, source=source, configuration=configuration,
-                persist_trajectory=payload.options.persistTrajectory,
-                push_interval_ms=payload.options.pushIntervalMs,
-            )
+            if camera_source is not None:
+                task_manager.submit_camera(
+                    task=task, source=camera_source, configuration=configuration,
+                    persist_trajectory=payload.options.persistTrajectory,
+                    push_interval_ms=payload.options.pushIntervalMs,
+                )
+            else:
+                assert video_source is not None
+                task_manager.submit_video(
+                    task=task, source=video_source, configuration=configuration,
+                    persist_trajectory=payload.options.persistTrajectory,
+                    push_interval_ms=payload.options.pushIntervalMs,
+                )
         except TaskConflictError:
             _fail(409, "MP0203", "another analysis task is already running")
         except Exception as exc:
             _fail(500, "MP0401", f"task save failed: {exc}")
         return ok({
             "taskId": task_id, "inputType": payload.inputType,
-            "cameraId": None, "videoId": payload.videoId,
+            "cameraId": payload.cameraId, "videoId": payload.videoId,
             "configurationId": payload.configurationId,
         })
 

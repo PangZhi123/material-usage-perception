@@ -100,6 +100,41 @@ class YoloByteTrackTracker:
             )
             yield TrackingFrame(frame_index, video_time, observations)
 
+    def track_frame(
+        self,
+        image: Any,
+        *,
+        frame_index: int,
+        video_time_seconds: float,
+        camera_id: str,
+        processing_session_id: str,
+    ) -> tuple[TrackObservation, ...]:
+        """Track one live frame while preserving ByteTrack state between calls."""
+
+        class_names = self._class_names()
+        target_class_id = self._target_class_id(class_names)
+        track_kwargs: dict[str, Any] = {
+            "source": image,
+            "persist": True,
+            "show": False,
+            "tracker": self.tracker_config,
+            "classes": [target_class_id],
+            "conf": self.confidence_threshold,
+            "verbose": False,
+        }
+        if self.device is not None:
+            track_kwargs["device"] = self.device
+        results = self.model.track(**track_kwargs)
+        result = results[0] if isinstance(results, (list, tuple)) else next(iter(results))
+        return self._convert_result(
+            result,
+            frame_index=frame_index,
+            video_time_seconds=video_time_seconds,
+            camera_id=camera_id,
+            processing_session_id=processing_session_id,
+            class_names=class_names,
+        )
+
     def _class_names(self) -> dict[int, str]:
         raw_names: Mapping[int, str] | list[str] = self.model.names
         if isinstance(raw_names, Mapping):

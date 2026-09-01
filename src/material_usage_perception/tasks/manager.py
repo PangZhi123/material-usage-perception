@@ -11,7 +11,7 @@ from typing import Any
 from material_usage_perception.config import DetectionRuntimeConfig
 from material_usage_perception.pipeline.v1_task import execute_tracking_task
 from material_usage_perception.repositories import BackendRepository
-from material_usage_perception.sources import VideoSource
+from material_usage_perception.sources import CameraSource, CameraStreamReader, VideoSource
 
 from .events import TaskEvent, TaskEventBus
 from .models import CancellationToken, TaskStatus
@@ -68,7 +68,27 @@ class TaskManager:
             self._tokens[task["taskId"]] = token
         self._executor.submit(
             self._run_video, task, source, configuration, persist_trajectory,
-            push_interval_ms, token,
+            push_interval_ms, token, None,
+        )
+
+    def submit_camera(
+        self,
+        *,
+        task: dict[str, Any],
+        source: CameraSource,
+        configuration: dict[str, Any],
+        persist_trajectory: bool,
+        push_interval_ms: int,
+    ) -> None:
+        resource_key = f"camera:{source.camera_id}"
+        if not self._repository.claim_task(task["taskId"], resource_key, task):
+            raise TaskConflictError("another analysis task is already running for this camera")
+        token = CancellationToken()
+        with self._lock:
+            self._tokens[task["taskId"]] = token
+        self._executor.submit(
+            self._run_video, task, None, configuration, persist_trajectory,
+            push_interval_ms, token, source,
         )
 
     def request_stop(self, task_id: str) -> dict[str, Any] | None:
@@ -90,11 +110,12 @@ class TaskManager:
     def _run_video(
         self,
         task: dict[str, Any],
-        source: VideoSource,
+        source: VideoSource | None,
         configuration: dict[str, Any],
         persist_trajectory: bool,
         push_interval_ms: int,
         token: CancellationToken,
+        camera_source: CameraSource | None,
     ) -> None:
         task_id = task["taskId"]
         started_at = _now()
@@ -140,18 +161,35 @@ class TaskManager:
             self._publish(task_id, "EVENT_UPDATE", {"event": event})
 
         try:
-            result = execute_tracking_task(
-                task_id=task_id,
-                video_path=source.video_path,
-                tracking_json_path=source.tracking_json_path,
-                configuration=configuration,
-                started_at=started_at,
-                model_path=self._detection.model_path,
-                confidence_threshold=self._detection.confidence_threshold,
-                cancellation_token=token,
-                frame_callback=realtime.on_frame,
-                event_callback=persist_and_publish_event,
-            )
+            if camera_source is not None:
+                with CameraStreamReader(camera_source.stream_url) as camera_stream:
+                    result = execute_tracking_task(
+                        task_id=task_id,
+                        video_path=camera_source.stream_url,
+                        tracking_json_path=None,
+                        configuration=configuration,
+                        started_at=started_at,
+                        model_path=self._detection.model_path,
+                        confidence_threshold=self._detection.confidence_threshold,
+                        cancellation_token=token,
+                        frame_callback=realtime.on_frame,
+                        event_callback=persist_and_publish_event,
+                        camera_stream=camera_stream,
+                    )
+            else:
+                assert source is not None
+                result = execute_tracking_task(
+                    task_id=task_id,
+                    video_path=source.video_path,
+                    tracking_json_path=source.tracking_json_path,
+                    configuration=configuration,
+                    started_at=started_at,
+                    model_path=self._detection.model_path,
+                    confidence_threshold=self._detection.confidence_threshold,
+                    cancellation_token=token,
+                    frame_callback=realtime.on_frame,
+                    event_callback=persist_and_publish_event,
+                )
             realtime.flush()
             final_status = (
                 TaskStatus.STOPPED.value if result.stopped else TaskStatus.COMPLETED.value

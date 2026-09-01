@@ -70,6 +70,19 @@ class TaskOptionsPayload(BaseModel):
     pushIntervalMs: int = Field(default=200, ge=0, le=60_000)
 
 
+class CameraRegistrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cameraId: str = Field(min_length=1, max_length=64)
+    streamUrl: str = Field(min_length=1, max_length=2048)
+
+    @model_validator(mode="after")
+    def validate_stream_url(self) -> "CameraRegistrationRequest":
+        if not self.streamUrl.lower().startswith(("rtsp://", "rtmp://")):
+            raise ValueError("streamUrl must use RTSP or RTMP")
+        return self
+
+
 class TaskCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

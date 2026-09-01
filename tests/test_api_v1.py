@@ -330,6 +330,19 @@ class ApiV1Test(unittest.TestCase):
             self.assertEqual(response.status_code, 422, response.text)
             self.assertEqual(response.json()["code"], "MP0101")
 
+    def test_register_camera_validates_and_stores_rtsp_url(self):
+        invalid = self.client.post(
+            "/api/material-perception/v1/cameras",
+            json={"cameraId": "cam", "streamUrl": "http://camera/live"},
+        )
+        self.assertEqual(invalid.status_code, 422)
+        response = self.client.post(
+            "/api/material-perception/v1/cameras",
+            json={"cameraId": "cam", "streamUrl": "rtsp://camera/live"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["cameraId"], "cam")
+
     def test_duplicate_vehicle_override_keys_are_rejected(self):
         scene_id = self.create_scene()
         response = self.client.post(

@@ -23,7 +23,8 @@ from material_usage_perception.api.v1 import create_v1_router
 from material_usage_perception.pipeline.offline_analysis import run_offline_analysis
 from material_usage_perception.repositories import SQLiteRepository
 from material_usage_perception.sources import (
-    VideoSourceRegistry, video_registry_from_environment,
+    CameraSourceRegistry, VideoSourceRegistry,
+    camera_registry_from_environment, video_registry_from_environment,
 )
 from material_usage_perception.tasks import TaskManager
 
@@ -69,6 +70,7 @@ def create_app(
     *,
     repository: Any | None = None,
     video_registry: VideoSourceRegistry | None = None,
+    camera_registry: CameraSourceRegistry | None = None,
 ) -> FastAPI:
     store = SettingsStore()
     storage_root = Path("outputs") / "backend_data"
@@ -77,6 +79,7 @@ def create_app(
     )
     detection = DetectionRuntimeConfig.from_environment()
     resolved_video_registry = video_registry or video_registry_from_environment()
+    resolved_camera_registry = camera_registry or camera_registry_from_environment()
     task_manager = TaskManager(resolved_repository, detection)
 
     @asynccontextmanager
@@ -112,12 +115,14 @@ def create_app(
     application.state.repository = resolved_repository
     application.state.detection = detection
     application.state.video_registry = resolved_video_registry
+    application.state.camera_registry = resolved_camera_registry
     application.state.task_manager = task_manager
     application.include_router(
         create_v1_router(
             resolved_repository, storage_root, detection,
             task_manager=task_manager,
             video_registry=resolved_video_registry,
+            camera_registry=resolved_camera_registry,
         )
     )
     application.mount(

@@ -32,6 +32,13 @@ class FakeResult:
 class FakeModel:
     names = {8: "transporter"}
 
+    def __init__(self):
+        self.calls = []
+
+    def track(self, **kwargs):
+        self.calls.append(kwargs)
+        return [FakeResult()]
+
 
 class YoloByteTrackTrackerTest(unittest.TestCase):
     def setUp(self):
@@ -59,6 +66,15 @@ class YoloByteTrackTrackerTest(unittest.TestCase):
     def test_validates_confidence_threshold(self):
         with self.assertRaises(ValueError):
             YoloByteTrackTracker("unused.pt", confidence_threshold=1.1)
+
+    def test_tracks_live_frame_with_persistent_bytetrack_state(self):
+        observations = self.tracker.track_frame(
+            object(), frame_index=4, video_time_seconds=1.5,
+            camera_id="cam", processing_session_id="task",
+        )
+        self.assertEqual([item.track_id for item in observations], [3, 9])
+        self.assertTrue(self.tracker.model.calls[0]["persist"])
+        self.assertEqual(self.tracker.model.calls[0]["classes"], [8])
 
 
 if __name__ == "__main__":
