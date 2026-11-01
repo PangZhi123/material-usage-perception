@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from material_usage_perception.config import AlgorithmSettings, DetectionRuntimeConfig
 from material_usage_perception.api.v1 import create_v1_router
 from material_usage_perception.pipeline.offline_analysis import run_offline_analysis
-from material_usage_perception.repositories import SQLiteRepository
+from material_usage_perception.repositories import FilesystemRepository
 from material_usage_perception.sources import (
     CameraSourceRegistry, VideoSourceRegistry,
     camera_registry_from_environment, video_registry_from_environment,
@@ -75,9 +75,7 @@ def create_app(
 ) -> FastAPI:
     store = SettingsStore()
     storage_root = Path(storage_root)
-    resolved_repository = repository or SQLiteRepository(
-        storage_root / "material_perception.sqlite3"
-    )
+    resolved_repository = repository or FilesystemRepository(storage_root)
     detection = DetectionRuntimeConfig.from_environment()
     resolved_video_registry = video_registry or video_registry_from_environment()
     for registered_video in resolved_repository.list_videos():
@@ -133,6 +131,11 @@ def create_app(
         StaticFiles(directory=storage_root / "scenes", check_dir=False),
         name="scene-files",
     )
+    application.mount(
+        "/files/data",
+        StaticFiles(directory=storage_root, check_dir=False),
+        name="local-data-files",
+    )
 
     def error_content(code: str, message: str, data: Any = None) -> dict[str, Any]:
         return {
@@ -182,13 +185,12 @@ def create_app(
 
     @application.get("/health")
     def health() -> dict[str, str]:
+        model_error = detection.model_file_error()
         return {
             "status": "ok",
-            "model_status": (
-                "ready" if detection.model_path and detection.model_path.is_file()
-                else "not_configured"
-            ),
+            "model_status": "ready" if model_error is None else "invalid",
             "model_version": detection.model_version,
+            "model_error": model_error or "",
         }
 
     @application.get("/settings")

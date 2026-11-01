@@ -9,6 +9,10 @@ from typing import Any, Iterator, Mapping
 from material_usage_perception.domain import BoundingBox, TrackObservation
 
 
+class ModelLoadError(RuntimeError):
+    """The configured YOLO checkpoint cannot be loaded."""
+
+
 @dataclass(frozen=True, slots=True)
 class TrackingFrame:
     """Tracking output for one source-video frame, including empty frames."""
@@ -47,10 +51,15 @@ class YoloByteTrackTracker:
     def model(self) -> Any:
         if self._model is None:
             if not self.model_path.is_file():
-                raise FileNotFoundError(f"YOLO model not found: {self.model_path}")
-            from ultralytics import YOLO
+                raise ModelLoadError(f"YOLO model not found: {self.model_path}")
+            try:
+                from ultralytics import YOLO
 
-            self._model = YOLO(str(self.model_path))
+                self._model = YOLO(str(self.model_path))
+            except Exception as exc:
+                raise ModelLoadError(
+                    f"YOLO model cannot be loaded: {self.model_path}: {exc}"
+                ) from exc
         return self._model
 
     def iter_video(

@@ -12,6 +12,7 @@ from material_usage_perception.config import DetectionRuntimeConfig
 from material_usage_perception.pipeline.v1_task import execute_tracking_task
 from material_usage_perception.repositories import BackendRepository
 from material_usage_perception.sources import CameraSource, CameraStreamReader, VideoSource
+from material_usage_perception.tracker import ModelLoadError
 
 from .events import TaskEvent, TaskEventBus
 from .models import CancellationToken, TaskStatus
@@ -216,7 +217,11 @@ class TaskManager:
                 self._repository.add_task(task_id, task)
             except Exception:
                 pass
-            code = "MP0401" if isinstance(exc, _TaskPersistenceFailure) else "MP0303"
+            code = (
+                "MP0401" if isinstance(exc, _TaskPersistenceFailure)
+                else "MP0301" if isinstance(exc, ModelLoadError)
+                else "MP0303"
+            )
             self._publish(task_id, "ERROR", {"code": code, "message": str(exc)})
             self._publish(task_id, "_TASK_STATUS", {"status": TaskStatus.FAILED.value})
         finally:

@@ -12,7 +12,7 @@ class ApiTest(unittest.TestCase):
     def test_health_and_manual_minimum_duration_setting(self):
         health = self.client.get("/health").json()
         self.assertEqual(health["status"], "ok")
-        self.assertIn(health["model_status"], ("ready", "not_configured"))
+        self.assertIn(health["model_status"], ("ready", "invalid"))
         response = self.client.put(
             "/settings",
             json={

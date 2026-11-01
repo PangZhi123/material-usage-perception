@@ -11,7 +11,7 @@
 2. 注册后端服务器本地已有的 MP4 文件（不复制文件）
    POST /api/material-perception/v1/video-registrations
 
-两种方式注册成功后都会返回 videoId。前端随后把该 videoId 传给“分析任务控制”接口即可开始历史视频分析。
+两种方式注册成功后都会返回 videoId。前端必须为该 videoId 重新上传场景图、完成标定和工作区域划定，取得视频专属 configurationId 后才能开始历史视频分析；禁止复用相机或其他历史视频的旧配置。
 
 注册信息保存在 SQLite 数据库中，同时加入当前服务的运行时注册表；不需要修改 YAML，也不需要重启服务。服务重启后，已成功注册的视频仍可通过原 videoId 使用。
 
@@ -93,7 +93,13 @@ D:\\shared-videos\\project-a\\history.mp4
 - 此方式直接读取原文件，不会再复制一份，因此原文件不能被移动或删除。
 
 
-四、使用 videoId 创建历史分析任务
+四、上传视频专属场景图并重新配置
+
+上传场景图时必须同时提交本次历史视频的 videoId。随后使用返回的 sceneId 重新
+提交标定点和一个工作区域；创建配置时同样提交该 videoId。前端上传新视频后应
+清空旧 sceneId、configurationId、标定点及工作区域。
+
+五、使用 videoId 创建历史分析任务
 
 取得 videoId 后，调用：
 POST /api/material-perception/v1/tasks
@@ -101,7 +107,6 @@ Content-Type: application/json
 
 请求体示例：
 {
-  "cameraId": "CAM_TEST_1",
   "configurationId": "<已存在且有效的配置ID>",
   "inputType": "VIDEO_FILE",
   "videoId": "video_0123456789abcdef",
@@ -113,10 +118,10 @@ Content-Type: application/json
 
 预期结果：任务创建成功，不再出现“videoId is not registered”错误。
 
-重要：创建任务时的 cameraId 必须与上传/注册视频时填写的 cameraId 一致；configurationId 必须是后端已经存在的有效配置标识。
+重要：VIDEO_FILE 任务不提交 cameraId；configurationId 必须是为同一个 videoId 重新上传场景图、标定并划定工作区域后生成的视频专属配置。未绑定视频或绑定其他视频的配置会返回 MP0202。
 
 
-五、建议验收用例
+六、建议验收用例
 
 1. 上传一个有效 MP4，确认返回 201、status=READY 和 videoId。
 2. 使用返回的 videoId 创建 VIDEO_FILE 任务，确认任务能够进入分析流程。
@@ -125,10 +130,10 @@ Content-Type: application/json
 5. 注册服务器本地 MP4，确认文件没有被复制，并可使用返回的 videoId 创建任务。
 6. 上传非 MP4、空文件或损坏 MP4，确认接口拒绝请求。
 7. 本地注册时传绝对路径或越界路径，确认接口拒绝请求。
-8. 创建任务时使用不匹配的 cameraId，确认后端拒绝请求。
+8. 创建任务时使用未绑定或绑定其他 videoId 的配置，确认返回 MP0202。
 
 
-六、常见问题
+七、常见问题
 
 1. 提示 videoId is not registered
    请确认使用的是上传/注册接口成功响应中的 data.videoId，不要使用本地文件名代替；同时确认前端和任务接口访问的是同一个后端实例及数据库。

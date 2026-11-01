@@ -27,6 +27,7 @@ class SceneRecord:
     width: int
     height: int
     sha256: str
+    video_id: str | None = None
 
 
 class MemoryRepository:

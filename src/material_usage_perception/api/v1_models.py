@@ -54,6 +54,7 @@ class StateMachinePayload(BaseModel):
 class ConfigurationCreateRequest(BaseModel):
     cameraId: str = Field(min_length=1, max_length=64)
     sceneId: str = Field(min_length=1, max_length=64)
+    videoId: str | None = Field(default=None, min_length=1, max_length=64)
     featurePairs: list[FeaturePairPayload] = Field(min_length=4)
     workAreas: list[WorkAreaPayload] = Field(min_length=1)
     material: MaterialPayload = Field(default_factory=MaterialPayload)

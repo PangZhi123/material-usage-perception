@@ -40,7 +40,7 @@ class SQLiteRepository:
                     scene_id TEXT PRIMARY KEY, scene_name TEXT NOT NULL,
                     site_id TEXT NOT NULL, description TEXT, image_path TEXT NOT NULL,
                     image_url TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
-                    sha256 TEXT NOT NULL
+                    sha256 TEXT NOT NULL, video_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS configuration (
                     configuration_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL
@@ -70,6 +70,12 @@ class SQLiteRepository:
                 );
                 """
             )
+            scene_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(scene)")
+            }
+            if "video_id" not in scene_columns:
+                self._connection.execute("ALTER TABLE scene ADD COLUMN video_id TEXT")
 
     def add_video(self, source: VideoSource) -> None:
         with self._lock, self._connection:
@@ -128,11 +134,14 @@ class SQLiteRepository:
     def add_scene(self, record: SceneRecord) -> None:
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT OR REPLACE INTO scene VALUES (?,?,?,?,?,?,?,?,?)",
+                """INSERT OR REPLACE INTO scene
+                   (scene_id, scene_name, site_id, description, image_path,
+                    image_url, width, height, sha256, video_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record.scene_id, record.scene_name, record.site_id,
                     record.description, str(record.image_path), record.image_url,
-                    record.width, record.height, record.sha256,
+                    record.width, record.height, record.sha256, record.video_id,
                 ),
             )
 
@@ -146,7 +155,7 @@ class SQLiteRepository:
         return SceneRecord(
             row["scene_id"], row["scene_name"], row["site_id"], row["description"],
             Path(row["image_path"]), row["image_url"], row["width"], row["height"],
-            row["sha256"],
+            row["sha256"], row["video_id"],
         )
 
     def add_configuration(self, configuration_id: str, value: dict[str, Any]) -> None:

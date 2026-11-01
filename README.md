@@ -86,11 +86,12 @@ curl.exe -X POST `
 ```powershell
 curl.exe -X POST "http://192.168.10.32:8001/api/material-perception/v1/tasks" `
   -H "Content-Type: application/json" `
-  -d '{"cameraId":"CAM_TEST_1","configurationId":"cfg_example","inputType":"VIDEO_FILE","videoId":"video_0123456789abcdef","options":{"persistTrajectory":true,"pushIntervalMs":1000}}'
+  -d '{"configurationId":"cfg_example","inputType":"VIDEO_FILE","videoId":"video_0123456789abcdef","options":{"persistTrajectory":true,"pushIntervalMs":1000}}'
 ```
 
-其中 `configurationId` 必须替换为后端已有的有效配置 ID，`cameraId` 必须与视频
-上传或注册时一致，`videoId` 必须原样使用接口返回值，不能填写文件名。也可以打开
+其中 `configurationId` 必须替换为针对该 `videoId` 重新上传场景图、标定并划定
+工作区域后生成的专属配置 ID，不能复用相机或其他视频的旧配置；`videoId` 必须
+原样使用接口返回值，不能填写文件名。也可以打开
 `http://<后端IP>:<端口>/docs`，依次通过 Swagger 测试“上传/注册”和“创建任务”。
 
 测试人员可参考
@@ -138,7 +139,8 @@ material-usage-perception/
 └── pyproject.toml
 ```
 
-详细方案见 [docs/material_usage_algorithm_design.md](docs/material_usage_algorithm_design.md)。
+详细方案见 [docs/material_usage_algorithm_design.md](docs/material_usage_algorithm_design.md)。  
+开发日志按日期归档在 [docs/开发日志/](docs/开发日志/README.md)。
 
 ## 开发环境约定
 
@@ -285,8 +287,29 @@ $env:MATERIAL_PERCEPTION_CAMERA_REGISTRY="config\camera_registry.yaml"
 参考文件为 `config/backend.env.example`。`GET /health` 会返回模型是否已配置及
 `model_version`，但不会暴露模型绝对路径。
 
-当前单机后端使用 `outputs/backend_data/material_perception.sqlite3` 保存场景、配置、
-任务、事件和轨迹。历史视频和实时摄像头任务都由后台线程执行，
+当前后端默认将场景、配置、视频元数据、任务、事件和轨迹保存为工程目录下的 JSON 文件，
+不依赖 SQLite。默认根目录为 `outputs/backend_data/`，可通过 `create_app(storage_root=...)`
+指定其他目录。文件采用临时文件写入后替换，降低写入中断造成 JSON 损坏的风险。
+
+文件布局如下：
+
+```text
+outputs/backend_data/
+├── configurations/<configurationId>.json
+├── scenes/<sceneId>.json
+├── videos/<videoId>.json
+└── tasks/
+    ├── index.json
+    └── <taskId>/
+        ├── task.json
+        ├── events.json
+        └── trajectories/<vehicleVisitId>.json
+```
+
+前端可通过 `GET /files/data/tasks/index.json` 获取任务索引，再读取任务目录中的
+`task.json`、`events.json` 和轨迹文件。配置、场景及视频元数据分别位于对应目录，
+通过 `GET /files/data/configurations/<configurationId>.json` 等路径读取。场景图片仍通过
+`/files/scenes/` 访问。历史视频和实时摄像头任务都由后台线程执行，
 `PATCH /tasks/{taskId}` 可请求停止并释放视频源。
 
 实时相机可以通过环境变量指向 YAML 注册表，也可以在服务启动后调用：
@@ -350,8 +373,9 @@ POST /api/material-perception/v1/video-registrations
 }
 ```
 
-接口禁止绝对路径和越过允许根目录的路径。上传及本地注册成功后，都使用返回的
-`videoId` 调用 `/api/material-perception/v1/tasks`。当前版本在文件上传完成且通过
+接口禁止绝对路径和越过允许根目录的路径。上传及本地注册成功后，必须先用返回的
+`videoId` 上传专属场景图、重新标定和划定工作区域，再使用新生成的
+`configurationId` 调用 `/api/material-perception/v1/tasks`。当前版本在文件上传完成且通过
 解码校验后才允许开始分析，尚不对未完成的 MP4 边上传边分析。
 
 ### 当前阶段范围限制
@@ -421,7 +445,7 @@ python -m material_usage_perception.pipeline.offline_analysis `
 - WebSocket 实时推送、断线续传、`SNAPSHOT` 和异步 worker 尚未实现；
 - `vehicleOverrides`、统计查询的 `materialType`、轨迹查询的 `coordinateType` 以及
   `pushIntervalMs` 已进入接口模型，但当前版本尚未完整应用；
-- SQLite 数据保存在 `outputs/backend_data/`。移交前不要携带旧数据库；首次启动会自动创建；
+- 本地 JSON 结果保存在 `outputs/backend_data/`。该目录包含任务与现场配置数据，移交前按需筛选；
 - 模型、视频和现场数据体积较大且可能涉及内部资料，传输前应确认接收方及传输渠道权限。
 
 快速验证命令：

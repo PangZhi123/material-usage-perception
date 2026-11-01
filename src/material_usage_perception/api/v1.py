@@ -301,7 +301,10 @@ def create_v1_router(
         sceneName: str = Form(...),
         siteId: str = Form(...),
         description: str | None = Form(default=None),
+        videoId: str | None = Form(default=None),
     ) -> ApiEnvelope:
+        if videoId is not None and video_registry.resolve(videoId) is None:
+            _fail(404, "MP0201", f"videoId is not registered: {videoId}")
         content = await file.read()
         if not content or len(content) > 20 * 1024 * 1024:
             _fail(422, "MP0101", "scene image must be between 1 byte and 20 MB")
@@ -317,7 +320,7 @@ def create_v1_router(
         record = SceneRecord(
             scene_id, sceneName, siteId, description, destination,
             f"/files/scenes/{destination.name}", image.shape[1], image.shape[0],
-            sha256(content).hexdigest(),
+            sha256(content).hexdigest(), videoId,
         )
         try:
             scene_root.mkdir(parents=True, exist_ok=True)
@@ -330,6 +333,7 @@ def create_v1_router(
             "sceneId": record.scene_id, "sceneName": record.scene_name,
             "imageUrl": record.image_url, "width": record.width,
             "height": record.height, "sha256": record.sha256,
+            "videoId": record.video_id,
         })
 
     @router.post(f"{api_prefix}/configurations", response_model=ApiEnvelope)
@@ -340,6 +344,19 @@ def create_v1_router(
             _fail(500, "MP0401", f"scene query failed: {exc}")
         if scene is None:
             _fail(404, "MP0102", f"scene does not exist: {payload.sceneId}")
+        if payload.videoId is not None:
+            video_source = video_registry.resolve(payload.videoId)
+            if video_source is None:
+                _fail(404, "MP0201", f"videoId is not registered: {payload.videoId}")
+            if scene.video_id != payload.videoId:
+                _fail(409, "MP0202", "sceneId is not bound to this videoId")
+            if (
+                video_source.camera_id is not None
+                and video_source.camera_id != payload.cameraId
+            ):
+                _fail(422, "MP0201", "video cameraId does not match configuration")
+        elif scene.video_id is not None:
+            _fail(409, "MP0202", "video-bound scene requires videoId")
         if len(payload.workAreas) != 1:
             _fail(
                 422, "MP0104",
@@ -402,6 +419,7 @@ def create_v1_router(
             "configurationId": configuration_id,
             "cameraId": payload.cameraId,
             "sceneId": payload.sceneId,
+            "videoId": payload.videoId,
             "calibrationVersion": calibration_version,
             "areaVersion": area_version,
             "materialConfigVersion": material_version,
@@ -470,13 +488,21 @@ def create_v1_router(
                 _fail(404, "MP0201", f"cameraId is not registered: {payload.cameraId}")
             if configuration["cameraId"] != payload.cameraId:
                 _fail(422, "MP0201", "cameraId does not match configuration")
-            if detection.model_path is None or not detection.model_path.is_file():
-                _fail(500, "MP0301", "configured detection model is not readable")
+            if configuration.get("videoId") is not None:
+                _fail(409, "MP0202", "video configuration cannot be used for camera stream")
+            model_error = detection.model_file_error()
+            if model_error:
+                _fail(500, "MP0301", model_error)
         else:
             assert payload.videoId is not None
             video_source = video_registry.resolve(payload.videoId)
             if video_source is None:
                 _fail(404, "MP0201", f"videoId is not registered: {payload.videoId}")
+            if configuration.get("videoId") != payload.videoId:
+                _fail(
+                    409, "MP0202",
+                    "VIDEO_FILE requires a configuration created for this videoId",
+                )
             if (
                 video_source.camera_id is not None
                 and video_source.camera_id != configuration["cameraId"]
@@ -487,10 +513,10 @@ def create_v1_router(
                 and not video_source.tracking_json_path.is_file()
             ):
                 _fail(404, "MP0201", "registered video source is not readable")
-            if video_source.tracking_json_path is None and (
-                detection.model_path is None or not detection.model_path.is_file()
-            ):
-                _fail(500, "MP0301", "configured detection model is not readable")
+            if video_source.tracking_json_path is None:
+                model_error = detection.model_file_error()
+                if model_error:
+                    _fail(500, "MP0301", model_error)
 
         task_id = f"task_{uuid4().hex[:16]}"
         task = {
