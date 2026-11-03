@@ -37,3 +37,18 @@
 - `objects: []` 尚未通过对应视频和部署模型复现定位，不能认定为视频问题或代码无缺陷。
 - Windows 沙箱初始化失败已定位为项目 .git 所有者/ACL 权限问题；修改所有者尝试被 Windows 拒绝，尚未修复，本次通过审批后的沙箱外命令工作。
 - 未实施跨相机配置选择警告、视角适配校验或历史结果独立统计，按本次确认范围执行。
+
+## 后续更新：算法结果持久化
+
+相机信息由业务后端管理，本次不增加相机登记持久化。
+
+默认文件仓库已补充启动读取：恢复任务、配置、场景、视频元数据、事件与轨迹。重启前仍为 QUEUED/RUNNING/STOPPING 的任务标为 FAILED，不自动续跑，已有部分结果保留。
+
+任务选项新增 `options.sampleEveryFrames`（默认 10，范围 1–10000），从第 1 个处理帧起每隔指定帧数保存一次，独立于 WebSocket 推送节流，空对象帧也保存。目录为 `outputs/backend_data/tasks/{taskId}/frames/{seq}.json`，保留帧时间、视频内时间、尺寸、车辆框、跟踪 ID、置信度、场景位置及状态等结果，不保存逐帧图像或完整 WebSocket 消息。
+
+- `GET /api/material-perception/v1/tasks/{taskId}/frames?fromSeq=0&limit=100`：读取采样检测结果，返回 items、hasMore、nextFromSeq。前端可据 bboxPx/bboxNorm 绘制框，据视频内时间定位录像。采样帧间不提供逐帧准确框。
+- `GET /api/material-perception/v1/tasks/{taskId}/result`：读取任务信息及该任务事件，estimatedVolumeM3 汇总 COMPLETED 事件；录像开始时间、执行时间与配置快照从 task 获取。
+
+结果按任务 ID 保存。采样保存失败使任务失败，避免无提示丢失存档。上述采样落盘和启动恢复针对默认 FilesystemRepository；其他可注入仓库暂不提供采样存档。
+
+验证：完整测试 67 passed，包含重启加载、任务结果查询、采样分页和中断任务恢复测试。未验证真实模型视频及浏览器回放绘制。

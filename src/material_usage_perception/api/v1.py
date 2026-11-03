@@ -579,6 +579,26 @@ def create_v1_router(
             "configurationId": payload.configurationId,
         })
 
+    @router.get(f"{api_prefix}/tasks/{{task_id}}/result", response_model=ApiEnvelope)
+    def task_result(task_id: str) -> ApiEnvelope:
+        task = repository.get_task(task_id)
+        if task is None:
+            _fail(404, "MP0204", "task does not exist")
+        events = [e for e in repository.list_events() if e.get("taskId") == task_id]
+        return ok({"task": task, "events": events,
+                   "estimatedVolumeM3": sum(e.get("estimatedVolumeM3") or 0
+                       for e in events if e.get("status") == "COMPLETED")})
+
+    @router.get(f"{api_prefix}/tasks/{{task_id}}/frames", response_model=ApiEnvelope)
+    def sampled_frames(task_id: str, fromSeq: int = Query(default=0, ge=0),
+                       limit: int = Query(default=100, ge=1, le=1000)) -> ApiEnvelope:
+        if repository.get_task(task_id) is None:
+            _fail(404, "MP0204", "task does not exist")
+        reader = getattr(repository, "query_samples", None)
+        items = reader(task_id, fromSeq, limit + 1) if reader else []
+        return ok({"items": items[:limit], "hasMore": len(items) > limit,
+                   "nextFromSeq": items[limit - 1]["frame"]["seq"] + 1 if len(items) > limit else None})
+
     @router.patch(f"{api_prefix}/tasks/{{task_id}}", response_model=ApiEnvelope)
     def stop_task(task_id: str, payload: TaskActionRequest) -> ApiEnvelope:
         try:

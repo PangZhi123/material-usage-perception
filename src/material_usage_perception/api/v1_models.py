@@ -68,6 +68,7 @@ class ConfigurationCreateRequest(BaseModel):
 
 class TaskOptionsPayload(BaseModel):
     persistTrajectory: bool = True
+    sampleEveryFrames: int = Field(default=10, ge=1, le=10000)
     pushIntervalMs: int = Field(default=200, ge=0, le=60_000)
 
 

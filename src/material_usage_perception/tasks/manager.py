@@ -157,6 +157,17 @@ class TaskManager:
         self._publish(task_id, "_TASK_STATUS", {"status": TaskStatus.RUNNING.value})
         realtime = _RealtimePublisher(task_id, push_interval_ms, self._event_bus)
 
+        def on_frame(frame: dict[str, Any]) -> None:
+            interval = task.get("options", {}).get("sampleEveryFrames", 10)
+            if (frame["frame"]["seq"] - 1) % interval == 0:
+                saver = getattr(self._repository, "save_sample", None)
+                if saver is not None:
+                    try:
+                        saver(task_id, frame)
+                    except Exception as exc:
+                        raise _TaskPersistenceFailure(str(exc)) from exc
+            realtime.on_frame(frame)
+
         def persist_and_publish_event(event: dict[str, Any]) -> None:
             # The event already contains its material estimate. Persist it before
             # notifying clients so a pushed completion is immediately queryable.
@@ -179,7 +190,7 @@ class TaskManager:
                         model_path=self._detection.model_path,
                         confidence_threshold=self._detection.confidence_threshold,
                         cancellation_token=token,
-                        frame_callback=realtime.on_frame,
+                        frame_callback=on_frame,
                         event_callback=persist_and_publish_event,
                         camera_stream=camera_stream,
                     )
@@ -195,7 +206,7 @@ class TaskManager:
                     model_path=self._detection.model_path,
                     confidence_threshold=self._detection.confidence_threshold,
                     cancellation_token=token,
-                    frame_callback=realtime.on_frame,
+                    frame_callback=on_frame,
                     event_callback=persist_and_publish_event,
                 )
             realtime.flush()

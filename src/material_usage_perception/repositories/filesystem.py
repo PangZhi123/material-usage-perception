@@ -28,6 +28,36 @@ class FilesystemRepository(MemoryRepository):
         ):
             directory.mkdir(parents=True, exist_ok=True)
         self._file_lock = RLock()
+        for path in self.configurations_root.glob("*.json"):
+            value = json.loads(path.read_text(encoding="utf-8"))
+            self.configurations[value.get("configurationId", path.stem)] = value
+        for path in self.tasks_root.glob("*/task.json"):
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if value.get("status") in {"QUEUED", "RUNNING", "STOPPING"}:
+                value.update(status="FAILED", error="service restarted before task completed")
+                self._write(path, value)
+            self.tasks[value["taskId"]] = value
+            events_path = path.parent / "events.json"
+            if events_path.exists():
+                for event in json.loads(events_path.read_text(encoding="utf-8")):
+                    MemoryRepository.add_event(self, value["taskId"], event)
+            for trajectory in (path.parent / "trajectories").glob("*.json"):
+                MemoryRepository.add_trajectory_points(self, value["taskId"], trajectory.stem,
+                    json.loads(trajectory.read_text(encoding="utf-8")))
+        for path in self.scenes_root.glob("*.json"):
+            v = json.loads(path.read_text(encoding="utf-8"))
+            self.scenes[v["sceneId"]] = SceneRecord(v["sceneId"], v["sceneName"], v["siteId"],
+                v.get("description"), Path(v["imagePath"]), v["imageUrl"], v["width"],
+                v["height"], v["sha256"], v.get("videoId"))
+        for path in self.videos_root.glob("*.json"):
+            v = json.loads(path.read_text(encoding="utf-8"))
+            self.videos[v["videoId"]] = VideoSource(v["videoId"], Path(v["videoPath"]),
+                camera_id=v.get("cameraId"), original_file_name=v.get("fileName"),
+                content_type=v.get("contentType"), size_bytes=v.get("sizeBytes"),
+                sha256=v.get("sha256"), width=v.get("width"), height=v.get("height"),
+                fps=v.get("fps"), frame_count=v.get("frameCount"),
+                duration_seconds=v.get("durationSeconds"), captured_at=v.get("capturedAt"),
+                uploaded_at=v.get("uploadedAt"), status=v.get("status", "READY"))
 
     def _write(self, path: Path, value: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,9 +97,7 @@ class FilesystemRepository(MemoryRepository):
             if not super().claim_task(task_id, resource_key, value):
                 return False
             task = self.get_task(task_id) or value
-            task["configurationSnapshot"] = self.get_configuration(
-                task.get("configurationId", "")
-            )
+            task.setdefault("configurationSnapshot", self.get_configuration(task.get("configurationId", "")))
             self._write(self.tasks_root / task_id / "task.json", task)
             self._write(self.tasks_root / "index.json", list(self.tasks.values()))
             return True
@@ -101,3 +129,11 @@ class FilesystemRepository(MemoryRepository):
         super().save_task_result(task, events, trajectories)
         for visit_id, points in trajectories.items():
             self.add_trajectory_points(task["taskId"], visit_id, points)
+
+    def save_sample(self, task_id: str, frame: dict[str, Any]) -> None:
+        self._write(self.tasks_root / task_id / "frames" / f"{frame['frame']['seq']:012d}.json", frame)
+
+    def query_samples(self, task_id: str, from_seq: int, limit: int) -> list[dict[str, Any]]:
+        paths = sorted((self.tasks_root / task_id / "frames").glob("*.json"))
+        return [json.loads(p.read_text(encoding="utf-8")) for p in
+                [p for p in paths if int(p.stem) >= from_seq][:limit]]
