@@ -132,6 +132,11 @@ def create_app(
         name="scene-files",
     )
     application.mount(
+        "/test-console",
+        StaticFiles(directory=Path(__file__).parent / "static", html=True),
+        name="test-console",
+    )
+    application.mount(
         "/files/data",
         StaticFiles(directory=storage_root, check_dir=False),
         name="local-data-files",

@@ -192,6 +192,7 @@ class ApiV1Test(unittest.TestCase):
                 "/api/material-perception/v1/tasks",
                 json={
                     "inputType": "VIDEO_FILE", "videoId": "video_test",
+                    "recordingStartedAt": "2020-01-01T08:00:00+08:00",
                     "configurationId": configuration["configurationId"],
                 },
             )
@@ -205,7 +206,7 @@ class ApiV1Test(unittest.TestCase):
                 time.sleep(0.01)
             self.assertEqual(self.repository.get_task(task_id)["status"], "COMPLETED")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.fromisoformat("2020-01-01T08:00:00+08:00")
         params = {
             "startTime": (now - timedelta(minutes=5)).isoformat(),
             "endTime": (now + timedelta(minutes=5)).isoformat(),
@@ -321,7 +322,7 @@ class ApiV1Test(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["code"], "MP0101")
 
-    def test_video_task_rejects_configuration_not_bound_to_video(self):
+    def test_video_task_accepts_camera_configuration(self):
         with TemporaryDirectory() as directory:
             video_path = Path(directory) / "history.mp4"
             video_path.write_bytes(b"not-read-before-binding-check")
@@ -334,20 +335,22 @@ class ApiV1Test(unittest.TestCase):
                 repository=repository,
                 video_registry=MappingVideoSourceRegistry({
                     "video_history": VideoSource(
-                        "video_history", video_path, camera_id="cam"
+                        "video_history", video_path, tracking_json_path=video_path, camera_id="cam"
                     )
                 }),
             ))
-            response = client.post(
+            from unittest.mock import patch
+            with patch.object(client.app.state.task_manager, "submit_video") as submit:
+                response = client.post(
                 "/api/material-perception/v1/tasks",
                 json={
                     "inputType": "VIDEO_FILE", "videoId": "video_history",
                     "configurationId": "cfg_camera",
+                    "recordingStartedAt": "2020-01-01T08:00:00+08:00",
                 },
             )
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["code"], "MP0202")
-        self.assertIn("configuration created for this videoId", response.json()["message"])
+        self.assertEqual(response.status_code, 200, response.text)
+        submit.assert_called_once()
 
     def test_task_source_fields_are_conditionally_required(self):
         for payload in (

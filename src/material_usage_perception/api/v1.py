@@ -210,6 +210,34 @@ def create_v1_router(
         camera_registry.register(CameraSource(payload.cameraId, payload.streamUrl))
         return ok({"cameraId": payload.cameraId, "status": "ACTIVE"})
 
+    @router.get(f"{api_prefix}/videos", response_model=ApiEnvelope)
+    def registered_videos() -> ApiEnvelope:
+        return ok({"items": [_video_payload(source, deduplicated=False)
+                             for source in repository.list_videos()]})
+
+    @router.get(f"{api_prefix}/tasks/{{task_id}}", response_model=ApiEnvelope)
+    def task_status(task_id: str) -> ApiEnvelope:
+        task = repository.get_task(task_id)
+        if task is None:
+            _fail(404, "MP0204", "task does not exist")
+        return ok(task)
+
+    @router.get(f"{api_prefix}/configurations/{{configuration_id}}", response_model=ApiEnvelope)
+    def configuration_detail(configuration_id: str) -> ApiEnvelope:
+        configuration = repository.get_configuration(configuration_id)
+        if configuration is None:
+            _fail(404, "MP0102", "configuration does not exist")
+        return ok(configuration)
+
+    @router.get(f"{api_prefix}/scenes/{{scene_id}}", response_model=ApiEnvelope)
+    def scene_detail(scene_id: str) -> ApiEnvelope:
+        scene = repository.get_scene(scene_id)
+        if scene is None:
+            _fail(404, "MP0102", "scene does not exist")
+        return ok({"sceneId": scene.scene_id, "sceneName": scene.scene_name,
+                   "imageUrl": scene.image_url, "width": scene.width,
+                   "height": scene.height, "videoId": scene.video_id})
+
     @router.post(f"{api_prefix}/videos", response_model=ApiEnvelope, status_code=201)
     async def upload_video(
         file: UploadFile = File(...),
@@ -498,16 +526,6 @@ def create_v1_router(
             video_source = video_registry.resolve(payload.videoId)
             if video_source is None:
                 _fail(404, "MP0201", f"videoId is not registered: {payload.videoId}")
-            if configuration.get("videoId") != payload.videoId:
-                _fail(
-                    409, "MP0202",
-                    "VIDEO_FILE requires a configuration created for this videoId",
-                )
-            if (
-                video_source.camera_id is not None
-                and video_source.camera_id != configuration["cameraId"]
-            ):
-                _fail(422, "MP0201", "video cameraId does not match configuration")
             if not video_source.video_path.is_file() or (
                 video_source.tracking_json_path is not None
                 and not video_source.tracking_json_path.is_file()
@@ -518,12 +536,20 @@ def create_v1_router(
                 if model_error:
                     _fail(500, "MP0301", model_error)
 
+        recording_started_at = payload.recordingStartedAt
+        if video_source is not None and recording_started_at is None:
+            raw_time = video_source.captured_at
+            if raw_time:
+                recording_started_at = datetime.fromisoformat(str(raw_time))
+            if recording_started_at is None or recording_started_at.utcoffset() is None:
+                _fail(422, "MP0101", "historical video requires recordingStartedAt with timezone")
         task_id = f"task_{uuid4().hex[:16]}"
         task = {
             "taskId": task_id, "inputType": payload.inputType,
-            "cameraId": payload.cameraId, "videoId": payload.videoId,
+            "cameraId": configuration["cameraId"], "videoId": payload.videoId,
             "configurationId": payload.configurationId,
             "modelVersion": configuration.get("modelVersion", detection.model_version),
+            "recordingStartedAt": recording_started_at.isoformat() if recording_started_at else None,
             "options": payload.options.model_dump(),
             "status": TaskStatus.QUEUED.value,
             "createdAt": _now().isoformat(), "startedAt": None,
@@ -543,13 +569,13 @@ def create_v1_router(
                     persist_trajectory=payload.options.persistTrajectory,
                     push_interval_ms=payload.options.pushIntervalMs,
                 )
-        except TaskConflictError:
-            _fail(409, "MP0203", "another analysis task is already running")
+        except TaskConflictError as exc:
+            _fail(409, "MP0203", str(exc))
         except Exception as exc:
             _fail(500, "MP0401", f"task save failed: {exc}")
         return ok({
             "taskId": task_id, "inputType": payload.inputType,
-            "cameraId": payload.cameraId, "videoId": payload.videoId,
+            "cameraId": configuration["cameraId"], "videoId": payload.videoId,
             "configurationId": payload.configurationId,
         })
 

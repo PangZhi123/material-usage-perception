@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -61,9 +62,11 @@ class TaskManager:
         persist_trajectory: bool,
         push_interval_ms: int,
     ) -> None:
-        resource_key = f"camera:{configuration['cameraId']}"
+        configuration = deepcopy(configuration)
+        task["configurationSnapshot"] = configuration
+        resource_key = "history:single"
         if not self._repository.claim_task(task["taskId"], resource_key, task):
-            raise TaskConflictError("another analysis task is already running for this camera")
+            raise TaskConflictError("another historical video task is running or stopping; wait for it to finish")
         token = CancellationToken()
         with self._lock:
             self._tokens[task["taskId"]] = token
@@ -81,6 +84,8 @@ class TaskManager:
         persist_trajectory: bool,
         push_interval_ms: int,
     ) -> None:
+        configuration = deepcopy(configuration)
+        task["configurationSnapshot"] = configuration
         resource_key = f"camera:{source.camera_id}"
         if not self._repository.claim_task(task["taskId"], resource_key, task):
             raise TaskConflictError("another analysis task is already running for this camera")
@@ -169,7 +174,8 @@ class TaskManager:
                         video_path=camera_source.stream_url,
                         tracking_json_path=None,
                         configuration=configuration,
-                        started_at=started_at,
+                        started_at=(datetime.fromisoformat(task["recordingStartedAt"])
+                                if task.get("recordingStartedAt") else started_at),
                         model_path=self._detection.model_path,
                         confidence_threshold=self._detection.confidence_threshold,
                         cancellation_token=token,
@@ -184,7 +190,8 @@ class TaskManager:
                     video_path=source.video_path,
                     tracking_json_path=source.tracking_json_path,
                     configuration=configuration,
-                    started_at=started_at,
+                    started_at=(datetime.fromisoformat(task["recordingStartedAt"])
+                                if task.get("recordingStartedAt") else started_at),
                     model_path=self._detection.model_path,
                     confidence_threshold=self._detection.confidence_threshold,
                     cancellation_token=token,

@@ -99,6 +99,7 @@ class TaskCreateRequest(BaseModel):
     cameraId: str | None = None
     videoId: str | None = None
     configurationId: str
+    recordingStartedAt: datetime | None = None
     options: TaskOptionsPayload = Field(default_factory=TaskOptionsPayload)
 
     @model_validator(mode="after")
@@ -110,6 +111,8 @@ class TaskCreateRequest(BaseModel):
                 )
         elif not self.videoId or self.cameraId is not None:
             raise ValueError("VIDEO_FILE requires videoId and forbids cameraId")
+        if self.recordingStartedAt is not None and self.recordingStartedAt.utcoffset() is None:
+            raise ValueError("recordingStartedAt requires a timezone")
         return self
 
 
