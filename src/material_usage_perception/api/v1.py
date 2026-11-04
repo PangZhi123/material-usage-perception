@@ -207,8 +207,72 @@ def create_v1_router(
 
     @router.post(f"{api_prefix}/cameras", response_model=ApiEnvelope)
     def register_camera(payload: CameraRegistrationRequest) -> ApiEnvelope:
-        camera_registry.register(CameraSource(payload.cameraId, payload.streamUrl))
+        try:
+            camera_registry.register(CameraSource(payload.cameraId, payload.streamUrl))
+        except Exception as exc:
+            _fail(500, "MP0401", f"camera save failed: {exc}")
         return ok({"cameraId": payload.cameraId, "status": "ACTIVE"})
+
+    @router.get(f"{api_prefix}/cameras", response_model=ApiEnvelope)
+    def registered_cameras() -> ApiEnvelope:
+        return ok({"items": [{"cameraId": s.camera_id, "status": "ACTIVE"}
+                             for s in camera_registry.list_sources()]})
+
+    @router.delete(f"{api_prefix}/cameras/{{camera_id}}", response_model=ApiEnvelope)
+    def delete_camera(camera_id: str) -> ApiEnvelope:
+        try:
+            deleted = camera_registry.delete(camera_id)
+        except Exception as exc:
+            _fail(500, "MP0401", f"camera delete failed: {exc}")
+        if not deleted:
+            _fail(404, "MP0201", "camera does not exist")
+        return ok({"cameraId": camera_id, "status": "DELETED"})
+
+    @router.get(f"{api_prefix}/configurations", response_model=ApiEnvelope)
+    def configurations() -> ApiEnvelope:
+        return ok({"items": [c for c in repository.list_configurations()
+                             if c.get("status") != "DELETED"]})
+
+    @router.delete(f"{api_prefix}/configurations/{{configuration_id}}", response_model=ApiEnvelope)
+    def delete_configuration(configuration_id: str) -> ApiEnvelope:
+        configuration = repository.get_configuration(configuration_id)
+        if configuration is None or configuration.get("status") == "DELETED":
+            _fail(404, "MP0102", "configuration does not exist")
+        try:
+            repository.add_configuration(configuration_id, {
+                **configuration, "status": "DELETED",
+            })
+        except Exception as exc:
+            _fail(500, "MP0401", f"configuration delete failed: {exc}")
+        return ok({"configurationId": configuration_id, "status": "DELETED"})
+
+    @router.get(f"{api_prefix}/videos", response_model=ApiEnvelope)
+    def registered_videos() -> ApiEnvelope:
+        return ok({"items": [_video_payload(source, deduplicated=False)
+                             for source in repository.list_videos()]})
+
+    @router.get(f"{api_prefix}/tasks/{{task_id}}", response_model=ApiEnvelope)
+    def task_status(task_id: str) -> ApiEnvelope:
+        task = repository.get_task(task_id)
+        if task is None:
+            _fail(404, "MP0204", "task does not exist")
+        return ok(task)
+
+    @router.get(f"{api_prefix}/configurations/{{configuration_id}}", response_model=ApiEnvelope)
+    def configuration_detail(configuration_id: str) -> ApiEnvelope:
+        configuration = repository.get_configuration(configuration_id)
+        if configuration is None or configuration.get("status") == "DELETED":
+            _fail(404, "MP0102", "configuration does not exist")
+        return ok(configuration)
+
+    @router.get(f"{api_prefix}/scenes/{{scene_id}}", response_model=ApiEnvelope)
+    def scene_detail(scene_id: str) -> ApiEnvelope:
+        scene = repository.get_scene(scene_id)
+        if scene is None:
+            _fail(404, "MP0102", "scene does not exist")
+        return ok({"sceneId": scene.scene_id, "sceneName": scene.scene_name,
+                   "imageUrl": scene.image_url, "width": scene.width,
+                   "height": scene.height, "videoId": scene.video_id})
 
     @router.post(f"{api_prefix}/videos", response_model=ApiEnvelope, status_code=201)
     async def upload_video(
@@ -301,7 +365,10 @@ def create_v1_router(
         sceneName: str = Form(...),
         siteId: str = Form(...),
         description: str | None = Form(default=None),
+        videoId: str | None = Form(default=None),
     ) -> ApiEnvelope:
+        if videoId is not None and video_registry.resolve(videoId) is None:
+            _fail(404, "MP0201", f"videoId is not registered: {videoId}")
         content = await file.read()
         if not content or len(content) > 20 * 1024 * 1024:
             _fail(422, "MP0101", "scene image must be between 1 byte and 20 MB")
@@ -317,7 +384,7 @@ def create_v1_router(
         record = SceneRecord(
             scene_id, sceneName, siteId, description, destination,
             f"/files/scenes/{destination.name}", image.shape[1], image.shape[0],
-            sha256(content).hexdigest(),
+            sha256(content).hexdigest(), videoId,
         )
         try:
             scene_root.mkdir(parents=True, exist_ok=True)
@@ -330,6 +397,7 @@ def create_v1_router(
             "sceneId": record.scene_id, "sceneName": record.scene_name,
             "imageUrl": record.image_url, "width": record.width,
             "height": record.height, "sha256": record.sha256,
+            "videoId": record.video_id,
         })
 
     @router.post(f"{api_prefix}/configurations", response_model=ApiEnvelope)
@@ -340,6 +408,19 @@ def create_v1_router(
             _fail(500, "MP0401", f"scene query failed: {exc}")
         if scene is None:
             _fail(404, "MP0102", f"scene does not exist: {payload.sceneId}")
+        if payload.videoId is not None:
+            video_source = video_registry.resolve(payload.videoId)
+            if video_source is None:
+                _fail(404, "MP0201", f"videoId is not registered: {payload.videoId}")
+            if scene.video_id != payload.videoId:
+                _fail(409, "MP0202", "sceneId is not bound to this videoId")
+            if (
+                video_source.camera_id is not None
+                and video_source.camera_id != payload.cameraId
+            ):
+                _fail(422, "MP0201", "video cameraId does not match configuration")
+        elif scene.video_id is not None:
+            _fail(409, "MP0202", "video-bound scene requires videoId")
         if len(payload.workAreas) != 1:
             _fail(
                 422, "MP0104",
@@ -402,6 +483,7 @@ def create_v1_router(
             "configurationId": configuration_id,
             "cameraId": payload.cameraId,
             "sceneId": payload.sceneId,
+            "videoId": payload.videoId,
             "calibrationVersion": calibration_version,
             "areaVersion": area_version,
             "materialConfigVersion": material_version,
@@ -470,34 +552,40 @@ def create_v1_router(
                 _fail(404, "MP0201", f"cameraId is not registered: {payload.cameraId}")
             if configuration["cameraId"] != payload.cameraId:
                 _fail(422, "MP0201", "cameraId does not match configuration")
-            if detection.model_path is None or not detection.model_path.is_file():
-                _fail(500, "MP0301", "configured detection model is not readable")
+            if configuration.get("videoId") is not None:
+                _fail(409, "MP0202", "video configuration cannot be used for camera stream")
+            model_error = detection.model_file_error()
+            if model_error:
+                _fail(500, "MP0301", model_error)
         else:
             assert payload.videoId is not None
             video_source = video_registry.resolve(payload.videoId)
             if video_source is None:
                 _fail(404, "MP0201", f"videoId is not registered: {payload.videoId}")
-            if (
-                video_source.camera_id is not None
-                and video_source.camera_id != configuration["cameraId"]
-            ):
-                _fail(422, "MP0201", "video cameraId does not match configuration")
             if not video_source.video_path.is_file() or (
                 video_source.tracking_json_path is not None
                 and not video_source.tracking_json_path.is_file()
             ):
                 _fail(404, "MP0201", "registered video source is not readable")
-            if video_source.tracking_json_path is None and (
-                detection.model_path is None or not detection.model_path.is_file()
-            ):
-                _fail(500, "MP0301", "configured detection model is not readable")
+            if video_source.tracking_json_path is None:
+                model_error = detection.model_file_error()
+                if model_error:
+                    _fail(500, "MP0301", model_error)
 
+        recording_started_at = payload.recordingStartedAt
+        if video_source is not None and recording_started_at is None:
+            raw_time = video_source.captured_at
+            if raw_time:
+                recording_started_at = datetime.fromisoformat(str(raw_time))
+            if recording_started_at is None or recording_started_at.utcoffset() is None:
+                _fail(422, "MP0101", "historical video requires recordingStartedAt with timezone")
         task_id = f"task_{uuid4().hex[:16]}"
         task = {
             "taskId": task_id, "inputType": payload.inputType,
-            "cameraId": payload.cameraId, "videoId": payload.videoId,
+            "cameraId": configuration["cameraId"], "videoId": payload.videoId,
             "configurationId": payload.configurationId,
             "modelVersion": configuration.get("modelVersion", detection.model_version),
+            "recordingStartedAt": recording_started_at.isoformat() if recording_started_at else None,
             "options": payload.options.model_dump(),
             "status": TaskStatus.QUEUED.value,
             "createdAt": _now().isoformat(), "startedAt": None,
@@ -517,15 +605,35 @@ def create_v1_router(
                     persist_trajectory=payload.options.persistTrajectory,
                     push_interval_ms=payload.options.pushIntervalMs,
                 )
-        except TaskConflictError:
-            _fail(409, "MP0203", "another analysis task is already running")
+        except TaskConflictError as exc:
+            _fail(409, "MP0203", str(exc))
         except Exception as exc:
             _fail(500, "MP0401", f"task save failed: {exc}")
         return ok({
             "taskId": task_id, "inputType": payload.inputType,
-            "cameraId": payload.cameraId, "videoId": payload.videoId,
+            "cameraId": configuration["cameraId"], "videoId": payload.videoId,
             "configurationId": payload.configurationId,
         })
+
+    @router.get(f"{api_prefix}/tasks/{{task_id}}/result", response_model=ApiEnvelope)
+    def task_result(task_id: str) -> ApiEnvelope:
+        task = repository.get_task(task_id)
+        if task is None:
+            _fail(404, "MP0204", "task does not exist")
+        events = [e for e in repository.list_events() if e.get("taskId") == task_id]
+        return ok({"task": task, "events": events,
+                   "estimatedVolumeM3": sum(e.get("estimatedVolumeM3") or 0
+                       for e in events if e.get("status") == "COMPLETED")})
+
+    @router.get(f"{api_prefix}/tasks/{{task_id}}/frames", response_model=ApiEnvelope)
+    def sampled_frames(task_id: str, fromSeq: int = Query(default=0, ge=0),
+                       limit: int = Query(default=100, ge=1, le=1000)) -> ApiEnvelope:
+        if repository.get_task(task_id) is None:
+            _fail(404, "MP0204", "task does not exist")
+        reader = getattr(repository, "query_samples", None)
+        items = reader(task_id, fromSeq, limit + 1) if reader else []
+        return ok({"items": items[:limit], "hasMore": len(items) > limit,
+                   "nextFromSeq": items[limit - 1]["frame"]["seq"] + 1 if len(items) > limit else None})
 
     @router.patch(f"{api_prefix}/tasks/{{task_id}}", response_model=ApiEnvelope)
     def stop_task(task_id: str, payload: TaskActionRequest) -> ApiEnvelope:
@@ -588,6 +696,14 @@ def create_v1_router(
                     and current.get("status") in terminal
                     and cursor >= bus.latest_sequence(task_id)
                 ):
+                    # Drain result messages first, then report the persisted
+                    # terminal state even on reconnect or after service restart.
+                    await websocket.send_json({
+                        "type": "TASK_STATUS", "taskId": task_id,
+                        "taskStatus": current["status"],
+                        "endedAt": current.get("endedAt"),
+                        "error": current.get("error"),
+                    })
                     await websocket.close(code=1000)
                     return
                 events = await asyncio.to_thread(bus.wait_after, task_id, cursor, 15.0)

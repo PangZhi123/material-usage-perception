@@ -50,8 +50,30 @@ class DetectionRuntimeConfig:
         confidence = float(os.getenv("MATERIAL_PERCEPTION_CONFIDENCE", "0.5"))
         if not 0 <= confidence <= 1:
             raise ValueError("MATERIAL_PERCEPTION_CONFIDENCE must be within [0, 1]")
+        model_path = None
+        if raw_path:
+            model_path = Path(raw_path).expanduser()
+            if not model_path.is_absolute():
+                # Resolve deployment-relative paths against the project root,
+                # not the shell's current working directory.
+                project_root = Path(__file__).resolve().parents[2]
+                model_path = project_root / model_path
+            model_path = model_path.resolve()
         return cls(
-            model_path=Path(raw_path) if raw_path else None,
+            model_path=model_path,
             model_version=os.getenv("MATERIAL_PERCEPTION_MODEL_VERSION", "unassigned"),
             confidence_threshold=confidence,
         )
+
+    def model_file_error(self) -> str | None:
+        if self.model_path is None:
+            return "model path is not configured"
+        if not self.model_path.is_file():
+            return f"model file does not exist: {self.model_path}"
+        size = self.model_path.stat().st_size
+        if size < 1024 * 1024:
+            prefix = self.model_path.read_bytes()[:128]
+            if prefix.startswith(b"version https://git-lfs.github.com/spec"):
+                return "model file is a Git LFS pointer; download the actual checkpoint"
+            return f"model file is unexpectedly small ({size} bytes)"
+        return None

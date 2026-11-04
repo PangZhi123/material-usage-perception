@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import json
 from pathlib import Path
 from threading import Condition, Event, RLock, Thread, current_thread
 from time import monotonic, time
@@ -48,6 +49,8 @@ class CameraSource:
 class CameraSourceRegistry(Protocol):
     def resolve(self, camera_id: str) -> CameraSource | None: ...
     def register(self, source: CameraSource) -> None: ...
+    def list_sources(self) -> list[CameraSource]: ...
+    def delete(self, camera_id: str) -> bool: ...
 
 
 class MappingCameraSourceRegistry:
@@ -56,6 +59,47 @@ class MappingCameraSourceRegistry:
     def __init__(self, sources: Mapping[str, CameraSource] | None = None) -> None:
         self._sources = dict(sources or {})
         self._lock = RLock()
+        self._storage_path: Path | None = None
+        self._deleted: set[str] = set()
+
+    def enable_persistence(self, path: Path) -> None:
+        with self._lock:
+            self._storage_path = path
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self._deleted = set(data.get("deleted", []))
+                self._sources.update({item["cameraId"]: CameraSource(
+                    item["cameraId"], item["streamUrl"]
+                ) for item in data.get("items", [])})
+                for camera_id in self._deleted:
+                    self._sources.pop(camera_id, None)
+
+    def _save(self, sources: dict[str, CameraSource], deleted: set[str]) -> None:
+        if self._storage_path is not None:
+            path = self._storage_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({
+                "items": [{"cameraId": s.camera_id, "streamUrl": s.stream_url}
+                          for s in sources.values()],
+                "deleted": sorted(deleted),
+            }, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(path)
+
+    def list_sources(self) -> list[CameraSource]:
+        with self._lock:
+            return list(self._sources.values())
+
+    def delete(self, camera_id: str) -> bool:
+        with self._lock:
+            if camera_id not in self._sources:
+                return False
+            sources = dict(self._sources)
+            sources.pop(camera_id)
+            deleted = self._deleted | {camera_id}
+            self._save(sources, deleted)
+            self._sources, self._deleted = sources, deleted
+            return True
 
     def resolve(self, camera_id: str) -> CameraSource | None:
         with self._lock:
@@ -63,7 +107,10 @@ class MappingCameraSourceRegistry:
 
     def register(self, source: CameraSource) -> None:
         with self._lock:
-            self._sources[source.camera_id] = source
+            sources = {**self._sources, source.camera_id: source}
+            deleted = self._deleted - {source.camera_id}
+            self._save(sources, deleted)
+            self._sources, self._deleted = sources, deleted
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "MappingCameraSourceRegistry":

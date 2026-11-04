@@ -54,6 +54,7 @@ class StateMachinePayload(BaseModel):
 class ConfigurationCreateRequest(BaseModel):
     cameraId: str = Field(min_length=1, max_length=64)
     sceneId: str = Field(min_length=1, max_length=64)
+    videoId: str | None = Field(default=None, min_length=1, max_length=64)
     featurePairs: list[FeaturePairPayload] = Field(min_length=4)
     workAreas: list[WorkAreaPayload] = Field(min_length=1)
     material: MaterialPayload = Field(default_factory=MaterialPayload)
@@ -67,6 +68,7 @@ class ConfigurationCreateRequest(BaseModel):
 
 class TaskOptionsPayload(BaseModel):
     persistTrajectory: bool = True
+    sampleEveryFrames: int = Field(default=10, ge=1, le=10000)
     pushIntervalMs: int = Field(default=200, ge=0, le=60_000)
 
 
@@ -98,6 +100,7 @@ class TaskCreateRequest(BaseModel):
     cameraId: str | None = None
     videoId: str | None = None
     configurationId: str
+    recordingStartedAt: datetime | None = None
     options: TaskOptionsPayload = Field(default_factory=TaskOptionsPayload)
 
     @model_validator(mode="after")
@@ -109,6 +112,8 @@ class TaskCreateRequest(BaseModel):
                 )
         elif not self.videoId or self.cameraId is not None:
             raise ValueError("VIDEO_FILE requires videoId and forbids cameraId")
+        if self.recordingStartedAt is not None and self.recordingStartedAt.utcoffset() is None:
+            raise ValueError("recordingStartedAt requires a timezone")
         return self
 
 

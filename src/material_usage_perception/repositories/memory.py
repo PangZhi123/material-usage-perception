@@ -27,6 +27,7 @@ class SceneRecord:
     width: int
     height: int
     sha256: str
+    video_id: str | None = None
 
 
 class MemoryRepository:
@@ -70,6 +71,10 @@ class MemoryRepository:
     def get_configuration(self, configuration_id: str) -> dict[str, Any] | None:
         with self._lock:
             return self.configurations.get(configuration_id)
+
+    def list_configurations(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self.configurations.values())
 
     def claim_task(
         self, task_id: str, resource_key: str, value: dict[str, Any]

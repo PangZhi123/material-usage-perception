@@ -26,13 +26,16 @@ class ApiV1Test(unittest.TestCase):
             )
         )
 
-    def create_scene(self):
+    def create_scene(self, video_id=None):
         ok, encoded = cv2.imencode(".png", np.zeros((100, 200, 3), dtype=np.uint8))
         self.assertTrue(ok)
         response = self.client.post(
             "/api/material-perception/v1/scenes",
             files={"file": ("scene.png", encoded.tobytes(), "image/png")},
-            data={"sceneName": "test scene", "siteId": "site_001"},
+            data={
+                "sceneName": "test scene", "siteId": "site_001",
+                **({"videoId": video_id} if video_id else {}),
+            },
         )
         self.assertEqual(response.status_code, 200, response.text)
         document = response.json()
@@ -153,11 +156,12 @@ class ApiV1Test(unittest.TestCase):
                     )
                 }),
             ))
-            scene_id = self.create_scene()
+            scene_id = self.create_scene("video_test")
             configuration = self.client.post(
             "/api/material-perception/v1/configurations",
             json={
                 "cameraId": "cam_task", "sceneId": scene_id,
+                "videoId": "video_test",
                 "cameraFrameWidth": 100, "cameraFrameHeight": 100,
                 "featurePairs": [
                     {"cameraPoint": {"x": x, "y": y}, "scenePoint": {"x": x * 2, "y": y}}
@@ -188,6 +192,7 @@ class ApiV1Test(unittest.TestCase):
                 "/api/material-perception/v1/tasks",
                 json={
                     "inputType": "VIDEO_FILE", "videoId": "video_test",
+                    "recordingStartedAt": "2020-01-01T08:00:00+08:00",
                     "configurationId": configuration["configurationId"],
                 },
             )
@@ -201,7 +206,7 @@ class ApiV1Test(unittest.TestCase):
                 time.sleep(0.01)
             self.assertEqual(self.repository.get_task(task_id)["status"], "COMPLETED")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.fromisoformat("2020-01-01T08:00:00+08:00")
         params = {
             "startTime": (now - timedelta(minutes=5)).isoformat(),
             "endTime": (now + timedelta(minutes=5)).isoformat(),
@@ -266,6 +271,10 @@ class ApiV1Test(unittest.TestCase):
         message_types = {message["type"] for message in messages}
         self.assertIn("FRAME_RESULT", message_types)
         self.assertIn("EVENT_UPDATE", message_types)
+        self.assertEqual(messages[-1]["type"], "TASK_STATUS")
+        self.assertEqual(messages[-1]["taskStatus"], "COMPLETED")
+        self.assertEqual(messages[-1]["taskId"], task_id)
+        self.assertIsNotNone(messages[-1]["endedAt"])
         event_statuses = {
             message["event"]["status"]
             for message in messages if message["type"] == "EVENT_UPDATE"
@@ -298,6 +307,30 @@ class ApiV1Test(unittest.TestCase):
             for item in message["objects"]
         ))
 
+    def test_websocket_terminal_task_without_event_history(self):
+        for status in ("COMPLETED", "STOPPED", "FAILED"):
+            with self.subTest(status=status):
+                task_id = "task_terminal_" + status
+                self.repository.add_task(task_id, {
+                    "taskId": task_id, "status": status,
+                    "endedAt": "2026-11-04T10:00:00+08:00",
+                    "error": "inference failed" if status == "FAILED" else None,
+                })
+                # Reconnecting must also report completion, without bus history.
+                for _ in range(2):
+                    with self.client.websocket_connect(
+                        f"/ws/material-perception/v1/tasks/{task_id}?lastFrameSeq=99"
+                    ) as websocket:
+                        message = websocket.receive_json()
+                        self.assertEqual(message["type"], "TASK_STATUS")
+                        self.assertEqual(message["taskStatus"], status)
+                        self.assertEqual(message["taskId"], task_id)
+                        self.assertEqual(message["error"],
+                                         "inference failed" if status == "FAILED" else None)
+                        with self.assertRaises(WebSocketDisconnect) as closed:
+                            websocket.receive_json()
+                        self.assertEqual(closed.exception.code, 1000)
+
     def test_websocket_missing_task_uses_mp0204(self):
         with self.client.websocket_connect(
             "/ws/material-perception/v1/tasks/task_missing"
@@ -316,6 +349,36 @@ class ApiV1Test(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
         self.assertEqual(response.json()["code"], "MP0101")
+
+    def test_video_task_accepts_camera_configuration(self):
+        with TemporaryDirectory() as directory:
+            video_path = Path(directory) / "history.mp4"
+            video_path.write_bytes(b"not-read-before-binding-check")
+            repository = MemoryRepository()
+            repository.add_configuration("cfg_camera", {
+                "configurationId": "cfg_camera", "cameraId": "cam",
+                "status": "ACTIVE", "videoId": None,
+            })
+            client = TestClient(create_app(
+                repository=repository,
+                video_registry=MappingVideoSourceRegistry({
+                    "video_history": VideoSource(
+                        "video_history", video_path, tracking_json_path=video_path, camera_id="cam"
+                    )
+                }),
+            ))
+            from unittest.mock import patch
+            with patch.object(client.app.state.task_manager, "submit_video") as submit:
+                response = client.post(
+                "/api/material-perception/v1/tasks",
+                json={
+                    "inputType": "VIDEO_FILE", "videoId": "video_history",
+                    "configurationId": "cfg_camera",
+                    "recordingStartedAt": "2020-01-01T08:00:00+08:00",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        submit.assert_called_once()
 
     def test_task_source_fields_are_conditionally_required(self):
         for payload in (
