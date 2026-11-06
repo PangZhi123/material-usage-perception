@@ -24,7 +24,7 @@ Content-Type: multipart/form-data
 
 表单字段：
 - file：必填，MP4 视频文件；当前仅支持 .mp4。
-- cameraId：必填，视频所属摄像头标识，长度 1～64 个字符。
+- cameraId：选填，视频所属摄像头标识；省略时不关联相机，返回 cameraId=null。填写时长度 1～64 个字符。
 - capturedAt：选填，视频采集时间，建议使用带时区的 ISO 8601 格式，例如 2026-09-01T08:00:00+08:00。
 
 curl 示例：
@@ -34,7 +34,7 @@ Swagger 测试步骤：
 1. 打开 http://<后端IP>:<端口>/docs。
 2. 展开 POST /api/material-perception/v1/videos。
 3. 点击 Try it out。
-4. 选择 MP4 文件，填写 cameraId；capturedAt 可不填。
+4. 选择 MP4 文件，可选填写 cameraId；capturedAt 可不填。
 5. 点击 Execute。
 6. HTTP 状态码应为 201，并保存响应 data.videoId。
 
@@ -147,3 +147,5 @@ Content-Type: application/json
 
 4. 是否需要修改 YAML 或重启
    不需要。新视频由接口写入 SQLite 并立即注册；YAML 仅保留用于预配置的开发测试视频。
+
+补充：服务器视频注册接口的 cameraId 同样选填，可省略或传 null。未关联相机的同内容视频重复上传或注册时复用原 videoId。

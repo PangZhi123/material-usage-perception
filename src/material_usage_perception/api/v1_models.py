@@ -88,7 +88,7 @@ class CameraRegistrationRequest(BaseModel):
 class LocalVideoRegistrationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    cameraId: str = Field(min_length=1, max_length=64)
+    cameraId: str | None = Field(default=None, min_length=1, max_length=64)
     relativePath: str = Field(min_length=1, max_length=1024)
     capturedAt: datetime | None = None
 

@@ -445,6 +445,20 @@ class ApiV1Test(unittest.TestCase):
                 self.assertEqual(
                     second.json()["data"]["videoId"], first_data["videoId"]
                 )
+                anonymous_id = None
+                for _ in range(2):
+                    anonymous = client.post(
+                        "/api/material-perception/v1/videos",
+                        files={"file": ("source.mp4", content, "video/mp4")},
+                    )
+                    self.assertEqual(anonymous.status_code, 201, anonymous.text)
+                    anonymous_data = anonymous.json()["data"]
+                    self.assertIsNone(anonymous_data["cameraId"])
+                    self.assertTrue(anonymous_data["deduplicated"])
+                    self.assertNotEqual(anonymous_data["videoId"], first_data["videoId"])
+                    if anonymous_id is not None:
+                        self.assertEqual(anonymous_data["videoId"], anonymous_id)
+                    anonymous_id = anonymous_data["videoId"]
                 self.assertIsNotNone(registry.resolve(first_data["videoId"]))
                 self.assertEqual(
                     len(list((root / "backend" / "videos").glob("video_*.mp4"))), 1
@@ -476,6 +490,20 @@ class ApiV1Test(unittest.TestCase):
                 self.assertFalse(data["deduplicated"])
                 self.assertEqual(registry.resolve(data["videoId"]).video_path, source_path)
                 self.assertFalse((root / "backend" / "videos" / f'{data["videoId"]}.mp4').exists())
+                anonymous_id = None
+                for payload in ({"relativePath": "local.mp4"},
+                                {"relativePath": "local.mp4", "cameraId": None}):
+                    anonymous = client.post(
+                        "/api/material-perception/v1/video-registrations", json=payload,
+                    )
+                    self.assertEqual(anonymous.status_code, 201, anonymous.text)
+                    anonymous_data = anonymous.json()["data"]
+                    self.assertIsNone(anonymous_data["cameraId"])
+                    self.assertEqual(registry.resolve(anonymous_data["videoId"]).video_path, source_path)
+                    if anonymous_id is not None:
+                        self.assertEqual(anonymous_data["videoId"], anonymous_id)
+                    anonymous_id = anonymous_data["videoId"]
+
 
     def test_duplicate_vehicle_override_keys_are_rejected(self):
         scene_id = self.create_scene()

@@ -103,7 +103,7 @@ def _video_metadata(path: Path) -> tuple[int, int, float, int, float]:
 def _register_video_file(
     *,
     path: Path,
-    camera_id: str,
+    camera_id: str | None,
     original_file_name: str,
     content_type: str,
     digest: str,
@@ -277,10 +277,10 @@ def create_v1_router(
     @router.post(f"{api_prefix}/videos", response_model=ApiEnvelope, status_code=201)
     async def upload_video(
         file: UploadFile = File(...),
-        cameraId: str = Form(...),
+        cameraId: str | None = Form(default=None),
         capturedAt: str | None = Form(default=None),
     ) -> ApiEnvelope:
-        if not cameraId.strip() or len(cameraId) > 64:
+        if cameraId is not None and (not cameraId.strip() or len(cameraId) > 64):
             _fail(422, "MP0101", "cameraId must contain between 1 and 64 characters")
         original_name = Path(file.filename or "upload.mp4").name
         content_type = (file.content_type or "application/octet-stream").lower()
@@ -307,7 +307,7 @@ def create_v1_router(
             if size_bytes == 0:
                 _fail(422, "MP0101", "video file must not be empty")
             source, deduplicated = _register_video_file(
-                path=temporary, camera_id=cameraId.strip(),
+                path=temporary, camera_id=cameraId.strip() if cameraId is not None else None,
                 original_file_name=original_name, content_type="video/mp4",
                 digest=digest.hexdigest(), size_bytes=size_bytes,
                 captured_at=captured_at, repository=repository,
